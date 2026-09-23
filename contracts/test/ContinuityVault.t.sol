@@ -169,6 +169,18 @@ contract ContinuityVaultTest {
         vm.prank(OWNER);
         vm.expectRevert(ContinuityVault.OwnershipRenunciationDisabled.selector);
         vault.renounceOwnership();
+
+        vm.warp(vault.activeUntil() + 1);
+        vm.prank(OWNER);
+        vm.expectRevert(ContinuityVault.OwnershipRenunciationDisabled.selector);
+        vault.renounceOwnership();
+
+        vm.warp(vault.continuityEligibleAt());
+        vault.activateContinuity();
+        vm.prank(OWNER);
+        vm.expectRevert(ContinuityVault.OwnershipRenunciationDisabled.selector);
+        vault.renounceOwnership();
+
         _eq(vault.owner(), OWNER);
     }
 
@@ -176,6 +188,60 @@ contract ContinuityVaultTest {
         vm.prank(OWNER);
         vault.transferOwnership(NEW_OWNER);
         _eq(vault.pendingOwner(), NEW_OWNER);
+        vm.prank(NEW_OWNER);
+        vault.acceptOwnership();
+        _eq(vault.owner(), NEW_OWNER);
+        _eq(vault.pendingOwner(), address(0));
+    }
+
+    function testOwnershipTransferInitiationBlockedInCautionAndContinuity() public {
+        vm.warp(vault.activeUntil() + 1);
+        vm.prank(OWNER);
+        vm.expectRevert(ContinuityVault.NotActiveMode.selector);
+        vault.transferOwnership(NEW_OWNER);
+        _eq(vault.pendingOwner(), address(0));
+
+        vm.warp(vault.continuityEligibleAt());
+        vault.activateContinuity();
+        vm.prank(OWNER);
+        vm.expectRevert(ContinuityVault.NotActiveMode.selector);
+        vault.transferOwnership(NEW_OWNER);
+        _eq(vault.pendingOwner(), address(0));
+    }
+
+    function testNonOwnerCannotInitiateOwnershipTransferInActive() public {
+        vm.prank(OTHER);
+        vm.expectRevert(
+            abi.encodeWithSelector(bytes4(keccak256("OwnableUnauthorizedAccount(address)")), OTHER)
+        );
+        vault.transferOwnership(NEW_OWNER);
+        _eq(vault.pendingOwner(), address(0));
+    }
+
+    function testOwnershipTransferZeroAddressRetainsOZPendingOwnerBehavior() public {
+        vm.prank(OWNER);
+        vault.transferOwnership(address(0));
+        _eq(vault.pendingOwner(), address(0));
+        _eq(vault.owner(), OWNER);
+    }
+
+    function testPendingOwnerCanAcceptAfterVaultEntersCaution() public {
+        vm.prank(OWNER);
+        vault.transferOwnership(NEW_OWNER);
+        vm.warp(vault.activeUntil() + 1);
+
+        vm.prank(NEW_OWNER);
+        vault.acceptOwnership();
+        _eq(vault.owner(), NEW_OWNER);
+        _eq(vault.pendingOwner(), address(0));
+    }
+
+    function testPendingOwnerCanAcceptAfterContinuityActivation() public {
+        vm.prank(OWNER);
+        vault.transferOwnership(NEW_OWNER);
+        vm.warp(vault.continuityEligibleAt());
+        vault.activateContinuity();
+
         vm.prank(NEW_OWNER);
         vault.acceptOwnership();
         _eq(vault.owner(), NEW_OWNER);

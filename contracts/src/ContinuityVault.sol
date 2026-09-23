@@ -106,6 +106,14 @@ contract ContinuityVault is Ownable2Step, ReentrancyGuard {
         revert OwnershipRenunciationDisabled();
     }
 
+    /// @dev Ownership transfer initiation is discretionary administration and
+    /// is therefore available only while the vault is ACTIVE. Acceptance of
+    /// an already pending transfer retains Ownable2Step semantics.
+    function transferOwnership(address newOwner) public override onlyOwner {
+        if (mode() != Mode.ACTIVE) revert NotActiveMode();
+        super.transferOwnership(newOwner);
+    }
+
     function mode() public view returns (Mode) {
         if (continuityActivated) return Mode.CONTINUITY;
         if (block.timestamp <= activeUntil()) return Mode.ACTIVE;
