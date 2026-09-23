@@ -137,6 +137,24 @@ contract ContinuityVault is Ownable2Step, ReentrancyGuard {
         return usdg.balanceOf(address(this)) >= protectedBalance;
     }
 
+    function checkIn() external onlyOwner {
+        if (mode() == Mode.CONTINUITY) revert NotActiveMode();
+        if (block.timestamp > type(uint64).max) revert TimestampOverflow();
+
+        lastHeartbeat = uint64(block.timestamp);
+        emit Heartbeat(block.timestamp);
+    }
+
+    function activateContinuity() external {
+        if (continuityActivated) revert ContinuityAlreadyActive();
+
+        uint256 eligibleAt = continuityEligibleAt();
+        if (block.timestamp < eligibleAt) revert ContinuityNotEligible(eligibleAt);
+
+        continuityActivated = true;
+        emit ContinuityActivated(msg.sender, block.timestamp);
+    }
+
     /// @notice Deposit USDG into the treasury without creating depositor claims.
     function deposit(uint256 amount) external nonReentrant {
         if (amount == 0) revert ZeroAmount();

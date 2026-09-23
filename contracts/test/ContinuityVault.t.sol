@@ -89,6 +89,8 @@ contract ContinuityVaultTest {
     event CommitmentExecuted(
         uint256 indexed id, address indexed recipient, uint256 amount, uint256 nextDue
     );
+    event Heartbeat(uint256 timestamp);
+    event ContinuityActivated(address indexed caller, uint256 timestamp);
 
     Vm private constant vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
     address private constant OWNER = address(0x1001);
@@ -791,6 +793,223 @@ contract ContinuityVaultTest {
             )
         );
         vault.executeCommitment(id);
+    }
+
+    function testOwnerCheckInRefreshesActiveDeadlinesAndPreservesState() public {
+        _depositAs(OWNER, 50 ether);
+        uint256 id = _createAsOwner(OTHER, 20 ether, 1, uint64(block.timestamp));
+        vm.warp(deployedAt + 1);
+        uint256 checkInTimestamp = block.timestamp;
+
+        vm.expectEmit(false, false, false, true);
+        emit Heartbeat(checkInTimestamp);
+        vm.prank(OWNER);
+        vault.checkIn();
+
+        _eq(vault.lastHeartbeat(), checkInTimestamp);
+        _eq(vault.activeUntil(), checkInTimestamp + HEARTBEAT);
+        _eq(vault.continuityEligibleAt(), checkInTimestamp + HEARTBEAT + GRACE);
+        _eq(vault.protectedBalance(), 20 ether);
+        _eq(vault.commitmentCount(), 1);
+        ContinuityVault.Commitment memory commitment = vault.getCommitment(id);
+        _true(commitment.active);
+        _false(vault.continuityActivated());
+        _eq(uint256(vault.mode()), uint256(ContinuityVault.Mode.ACTIVE));
+    }
+
+    function testOwnerCheckInRefreshesFromCaution() public {
+        vm.warp(vault.activeUntil() + 1);
+        _eq(uint256(vault.mode()), uint256(ContinuityVault.Mode.CAUTION));
+        uint256 checkInTimestamp = block.timestamp;
+
+        vm.prank(OWNER);
+        vault.checkIn();
+
+        _eq(vault.lastHeartbeat(), checkInTimestamp);
+        _eq(uint256(vault.mode()), uint256(ContinuityVault.Mode.ACTIVE));
+        _eq(vault.activeUntil(), checkInTimestamp + HEARTBEAT);
+        _eq(vault.continuityEligibleAt(), checkInTimestamp + HEARTBEAT + GRACE);
+    }
+
+    function testDepositRemainsPermissionlessInCaution() public {
+        vm.warp(vault.activeUntil() + 1);
+        _eq(uint256(vault.mode()), uint256(ContinuityVault.Mode.CAUTION));
+        _depositAs(OTHER, 10 ether);
+
+        _eq(token.balanceOf(address(vault)), 10 ether);
+        _eq(vault.availableBalance(), 10 ether);
+    }
+
+    function testOwnerCanCheckInAtAndAfterOldEligibilityBeforeActivation() public {
+        uint256 oldEligibleAt = vault.continuityEligibleAt();
+        vm.warp(oldEligibleAt + 1);
+        _eq(uint256(vault.mode()), uint256(ContinuityVault.Mode.CAUTION));
+        vm.prank(OWNER);
+        vault.checkIn();
+        _eq(uint256(vault.mode()), uint256(ContinuityVault.Mode.ACTIVE));
+        _false(vault.continuityActivated());
+    }
+
+    function testNonOwnerCannotCheckInInActiveOrCaution() public {
+        uint64 initialHeartbeat = vault.lastHeartbeat();
+        vm.prank(OTHER);
+        vm.expectRevert(
+            abi.encodeWithSelector(bytes4(keccak256("OwnableUnauthorizedAccount(address)")), OTHER)
+        );
+        vault.checkIn();
+        _eq(vault.lastHeartbeat(), initialHeartbeat);
+
+        vm.warp(vault.activeUntil() + 1);
+        vm.prank(OTHER);
+        vm.expectRevert(
+            abi.encodeWithSelector(bytes4(keccak256("OwnableUnauthorizedAccount(address)")), OTHER)
+        );
+        vault.checkIn();
+        _eq(vault.lastHeartbeat(), initialHeartbeat);
+    }
+
+    function testCheckInTimestampBoundaryAndOverflowSafety() public {
+        vm.warp(type(uint64).max);
+        vm.prank(OWNER);
+        vault.checkIn();
+        _eq(vault.lastHeartbeat(), type(uint64).max);
+
+        vm.warp(uint256(type(uint64).max) + 1);
+        vm.prank(OWNER);
+        vm.expectRevert(ContinuityVault.TimestampOverflow.selector);
+        vault.checkIn();
+        _eq(vault.lastHeartbeat(), type(uint64).max);
+    }
+
+    function testActivationRejectsBeforeEligibilityAndSucceedsAtExactEligibility() public {
+        uint256 activeUntil = vault.activeUntil();
+        uint256 eligibleAt = vault.continuityEligibleAt();
+
+        vm.warp(activeUntil);
+        vm.expectRevert(
+            abi.encodeWithSelector(ContinuityVault.ContinuityNotEligible.selector, eligibleAt)
+        );
+        vault.activateContinuity();
+
+        vm.warp(eligibleAt - 1);
+        vm.expectRevert(
+            abi.encodeWithSelector(ContinuityVault.ContinuityNotEligible.selector, eligibleAt)
+        );
+        vault.activateContinuity();
+        _eq(uint256(vault.mode()), uint256(ContinuityVault.Mode.CAUTION));
+
+        vm.warp(eligibleAt);
+        vm.expectEmit(true, false, false, true);
+        emit ContinuityActivated(OTHER, eligibleAt);
+        vm.prank(OTHER);
+        vault.activateContinuity();
+
+        _true(vault.continuityActivated());
+        _eq(uint256(vault.mode()), uint256(ContinuityVault.Mode.CONTINUITY));
+    }
+
+    function testActivationSucceedsAfterEligibilityAndLatches() public {
+        uint256 eligibleAt = vault.continuityEligibleAt();
+        vm.warp(eligibleAt + 1);
+        vm.prank(NEW_OWNER);
+        vault.activateContinuity();
+
+        _true(vault.continuityActivated());
+        _eq(uint256(vault.mode()), uint256(ContinuityVault.Mode.CONTINUITY));
+        vm.warp(type(uint64).max);
+        _eq(uint256(vault.mode()), uint256(ContinuityVault.Mode.CONTINUITY));
+
+        vm.expectRevert(ContinuityVault.ContinuityAlreadyActive.selector);
+        vault.activateContinuity();
+    }
+
+    function testContinuityActivationPreservesFinancialAndHeartbeatState() public {
+        _depositAs(OWNER, 50 ether);
+        uint256 id = _createAsOwner(OTHER, 20 ether, 1, uint64(block.timestamp));
+        uint64 heartbeat = vault.lastHeartbeat();
+        uint256 protectedAmount = vault.protectedBalance();
+
+        vm.warp(vault.continuityEligibleAt());
+        vault.activateContinuity();
+
+        _eq(vault.lastHeartbeat(), heartbeat);
+        _eq(vault.protectedBalance(), protectedAmount);
+        _eq(vault.commitmentCount(), 1);
+        ContinuityVault.Commitment memory commitment = vault.getCommitment(id);
+        _eq(commitment.amount, 20 ether);
+        _true(commitment.active);
+    }
+
+    function testEligibilityRaceCheckInFirstInvalidatesOldThreshold() public {
+        uint256 oldEligibleAt = vault.continuityEligibleAt();
+        vm.warp(oldEligibleAt);
+        vm.prank(OWNER);
+        vault.checkIn();
+        uint256 refreshedEligibleAt = vault.continuityEligibleAt();
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ContinuityVault.ContinuityNotEligible.selector, refreshedEligibleAt
+            )
+        );
+        vault.activateContinuity();
+        _false(vault.continuityActivated());
+        _eq(uint256(vault.mode()), uint256(ContinuityVault.Mode.ACTIVE));
+    }
+
+    function testEligibilityRaceActivationFirstBlocksLaterCheckIn() public {
+        uint256 eligibleAt = vault.continuityEligibleAt();
+        vm.warp(eligibleAt);
+        vault.activateContinuity();
+        uint64 heartbeat = vault.lastHeartbeat();
+
+        vm.prank(OWNER);
+        vm.expectRevert(ContinuityVault.NotActiveMode.selector);
+        vault.checkIn();
+        _eq(vault.lastHeartbeat(), heartbeat);
+    }
+
+    function testContinuityFinancialBehaviorPreservesExecutionAndDeposit() public {
+        _depositAs(OWNER, 100 ether);
+        uint256 oneTimeId = _createAsOwner(OTHER, 30 ether, 0, uint64(block.timestamp));
+        uint256 recurringId = _createAsOwner(NEW_OWNER, 20 ether, 1, uint64(block.timestamp));
+
+        vm.warp(vault.continuityEligibleAt());
+        vault.activateContinuity();
+        _eq(uint256(vault.mode()), uint256(ContinuityVault.Mode.CONTINUITY));
+
+        _depositAs(OTHER, 10 ether);
+        vm.prank(NEW_OWNER);
+        vault.executeCommitment(oneTimeId);
+        vm.prank(OTHER);
+        vault.executeCommitment(recurringId);
+
+        _eq(token.balanceOf(OTHER), 30 ether);
+        _eq(token.balanceOf(NEW_OWNER), 20 ether);
+        _eq(token.balanceOf(address(vault)), 60 ether);
+        _eq(vault.protectedBalance(), 20 ether);
+        _eq(vault.availableBalance(), 40 ether);
+
+        vm.prank(OWNER);
+        vm.expectRevert(ContinuityVault.NotActiveMode.selector);
+        vault.withdrawAvailable(OWNER, 1);
+        vm.prank(OWNER);
+        vm.expectRevert(ContinuityVault.NotActiveMode.selector);
+        vault.createCommitment(OWNER, 1, 0, uint64(block.timestamp));
+        vm.prank(OWNER);
+        vm.expectRevert(ContinuityVault.NotActiveMode.selector);
+        vault.cancelCommitment(recurringId);
+    }
+
+    function testModeBoundariesIncludeContinuity() public {
+        vm.warp(vault.activeUntil());
+        _eq(uint256(vault.mode()), uint256(ContinuityVault.Mode.ACTIVE));
+        vm.warp(vault.activeUntil() + 1);
+        _eq(uint256(vault.mode()), uint256(ContinuityVault.Mode.CAUTION));
+        vm.warp(vault.continuityEligibleAt());
+        _eq(uint256(vault.mode()), uint256(ContinuityVault.Mode.CAUTION));
+        vault.activateContinuity();
+        _eq(uint256(vault.mode()), uint256(ContinuityVault.Mode.CONTINUITY));
     }
 
     function testUnknownCommitmentRejectedAndCountEmpty() public {
