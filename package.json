@@ -1,0 +1,11 @@
+{
+  "name": "dureqo",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@10.32.1",
+  "scripts": {
+    "build:web": "pnpm --filter @dureqo/web build",
+    "lint:web": "pnpm --filter @dureqo/web lint",
+    "typecheck:web": "pnpm --filter @dureqo/web typecheck"
+  }
+}
