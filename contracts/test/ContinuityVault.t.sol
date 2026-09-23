@@ -78,6 +78,17 @@ contract MockUSDC is IERC20 {
 contract ContinuityVaultTest {
     event Deposited(address indexed depositor, uint256 amount);
     event AvailableWithdrawn(address indexed recipient, uint256 amount);
+    event CommitmentCreated(
+        uint256 indexed id,
+        address indexed recipient,
+        uint256 amount,
+        uint256 interval,
+        uint256 firstDue
+    );
+    event CommitmentCancelled(uint256 indexed id);
+    event CommitmentExecuted(
+        uint256 indexed id, address indexed recipient, uint256 amount, uint256 nextDue
+    );
 
     Vm private constant vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
     address private constant OWNER = address(0x1001);
@@ -391,6 +402,397 @@ contract ContinuityVaultTest {
         _eq(vault.availableBalance(), 100 ether);
     }
 
+    function testOwnerCreatesFundedCommitmentsAndStoresExactFields() public {
+        _depositAs(OWNER, 100 ether);
+        uint64 firstDue = uint64(block.timestamp);
+
+        vm.expectEmit(true, true, false, true);
+        emit CommitmentCreated(1, OTHER, 30 ether, 0, firstDue);
+        uint256 oneTimeId = _createAsOwner(OTHER, 30 ether, 0, firstDue);
+        uint256 recurringId = _createAsOwner(OTHER, 40 ether, 1, firstDue);
+
+        _eq(oneTimeId, 1);
+        _eq(recurringId, 2);
+        _eq(vault.commitmentCount(), 2);
+        _eq(vault.protectedBalance(), 70 ether);
+
+        ContinuityVault.Commitment memory commitment = vault.getCommitment(oneTimeId);
+        _eq(commitment.recipient, OTHER);
+        _eq(commitment.amount, 30 ether);
+        _eq(commitment.interval, 0);
+        _eq(commitment.nextDue, firstDue);
+        _true(commitment.active);
+    }
+
+    function testCreateRejectsInvalidInputsAndInsufficientFunding() public {
+        _depositAs(OWNER, 100 ether);
+        uint64 firstDue = uint64(block.timestamp);
+
+        vm.prank(OWNER);
+        vm.expectRevert(ContinuityVault.ZeroAddress.selector);
+        vault.createCommitment(address(0), 1, 0, firstDue);
+
+        vm.prank(OWNER);
+        vm.expectRevert(ContinuityVault.ZeroAmount.selector);
+        vault.createCommitment(OTHER, 0, 0, firstDue);
+
+        vm.warp(block.timestamp + 1);
+        vm.prank(OWNER);
+        vm.expectRevert(ContinuityVault.InvalidDueTime.selector);
+        vault.createCommitment(OTHER, 1, 0, firstDue);
+
+        vm.prank(OWNER);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ContinuityVault.InsufficientFundingForCommitment.selector, 101 ether, 100 ether
+            )
+        );
+        vault.createCommitment(OTHER, 101 ether, 0, uint64(block.timestamp));
+
+        _eq(vault.commitmentCount(), 0);
+        _eq(vault.protectedBalance(), 0);
+    }
+
+    function testCreateAcceptsDueNowFutureAndIntervalOne() public {
+        _depositAs(OWNER, 100 ether);
+        uint64 dueNow = uint64(block.timestamp);
+        uint64 futureDue = dueNow + 1;
+
+        _createAsOwner(OTHER, 10 ether, 0, dueNow);
+        _createAsOwner(OTHER, 10 ether, 1, futureDue);
+
+        _eq(vault.commitmentCount(), 2);
+        _eq(vault.protectedBalance(), 20 ether);
+    }
+
+    function testNonOwnerCannotCreateCommitment() public {
+        _depositAs(OWNER, 100 ether);
+        vm.prank(OTHER);
+        vm.expectRevert(
+            abi.encodeWithSelector(bytes4(keccak256("OwnableUnauthorizedAccount(address)")), OTHER)
+        );
+        vault.createCommitment(OTHER, 1, 0, uint64(block.timestamp));
+    }
+
+    function testCreateAllowedAtActiveUntilAndBlockedAfter() public {
+        _depositAs(OWNER, 100 ether);
+        vm.warp(vault.activeUntil());
+        _createAsOwner(OTHER, 10 ether, 0, uint64(block.timestamp));
+
+        vm.warp(vault.activeUntil() + 1);
+        vm.prank(OWNER);
+        vm.expectRevert(ContinuityVault.NotActiveMode.selector);
+        vault.createCommitment(OTHER, 10 ether, 0, uint64(block.timestamp));
+    }
+
+    function testDirectTransferFundsCommitmentCreation() public {
+        token.mint(OTHER, 50 ether);
+        vm.prank(OTHER);
+        require(token.transfer(address(vault), 50 ether));
+
+        _createAsOwner(OTHER, 50 ether, 0, uint64(block.timestamp));
+
+        _eq(vault.protectedBalance(), 50 ether);
+        _eq(vault.availableBalance(), 0);
+    }
+
+    function testOwnerCancelsCommitmentsAndPreservesHistory() public {
+        _depositAs(OWNER, 100 ether);
+        uint256 firstId = _createAsOwner(OTHER, 20 ether, 0, uint64(block.timestamp));
+        uint256 secondId = _createAsOwner(NEW_OWNER, 40 ether, 0, uint64(block.timestamp));
+
+        vm.expectEmit(true, false, false, true);
+        emit CommitmentCancelled(firstId);
+        vm.prank(OWNER);
+        vault.cancelCommitment(firstId);
+
+        ContinuityVault.Commitment memory firstCommitment = vault.getCommitment(firstId);
+        ContinuityVault.Commitment memory secondCommitment = vault.getCommitment(secondId);
+        _eq(firstCommitment.amount, 20 ether);
+        _eq(firstCommitment.interval, 0);
+        _eq(firstCommitment.nextDue, uint64(block.timestamp));
+        _false(firstCommitment.active);
+        _eq(secondCommitment.recipient, NEW_OWNER);
+        _eq(secondCommitment.amount, 40 ether);
+        _eq(secondCommitment.nextDue, uint64(block.timestamp));
+        _true(secondCommitment.active);
+        _eq(vault.protectedBalance(), 40 ether);
+        _eq(vault.availableBalance(), 60 ether);
+        _eq(token.balanceOf(address(vault)), 100 ether);
+    }
+
+    function testCancellationRejectsInactiveUnknownAndUnauthorized() public {
+        _depositAs(OWNER, 20 ether);
+        uint256 id = _createAsOwner(OTHER, 20 ether, 0, uint64(block.timestamp));
+
+        vm.prank(OTHER);
+        vm.expectRevert(
+            abi.encodeWithSelector(bytes4(keccak256("OwnableUnauthorizedAccount(address)")), OTHER)
+        );
+        vault.cancelCommitment(id);
+
+        vm.prank(OWNER);
+        vault.cancelCommitment(id);
+        vm.prank(OWNER);
+        vm.expectRevert(abi.encodeWithSelector(ContinuityVault.CommitmentInactive.selector, id));
+        vault.cancelCommitment(id);
+
+        vm.prank(OWNER);
+        vm.expectRevert(abi.encodeWithSelector(ContinuityVault.InvalidCommitment.selector, 2));
+        vault.cancelCommitment(2);
+    }
+
+    function testCancellationAllowedAtActiveUntilAndBlockedAfter() public {
+        _depositAs(OWNER, 20 ether);
+        uint256 id = _createAsOwner(OTHER, 20 ether, 0, uint64(block.timestamp));
+
+        vm.warp(vault.activeUntil());
+        vm.prank(OWNER);
+        vault.cancelCommitment(id);
+
+        uint256 secondId = _createAsOwner(OTHER, 20 ether, 0, uint64(block.timestamp));
+        vm.warp(vault.activeUntil() + 1);
+        vm.prank(OWNER);
+        vm.expectRevert(ContinuityVault.NotActiveMode.selector);
+        vault.cancelCommitment(secondId);
+    }
+
+    function testRandomCallerExecutesOneTimeUsingStoredAuthority() public {
+        _depositAs(OWNER, 100 ether);
+        uint256 id = _createAsOwner(OTHER, 30 ether, 0, uint64(block.timestamp));
+
+        vm.expectEmit(true, true, false, true);
+        emit CommitmentExecuted(id, OTHER, 30 ether, block.timestamp);
+        vm.prank(NEW_OWNER);
+        vault.executeCommitment(id);
+
+        _eq(token.balanceOf(OTHER), 30 ether);
+        _eq(token.balanceOf(NEW_OWNER), 0);
+        _eq(token.balanceOf(address(vault)), 70 ether);
+        _eq(vault.protectedBalance(), 0);
+        _eq(vault.availableBalance(), 70 ether);
+        _eq(vault.owner(), OWNER);
+        ContinuityVault.Commitment memory commitment = vault.getCommitment(id);
+        _eq(commitment.amount, 30 ether);
+        _eq(commitment.nextDue, uint64(block.timestamp));
+        _false(commitment.active);
+    }
+
+    function testExecutionRejectsUnknownInactiveAndEarlyCommitments() public {
+        _depositAs(OWNER, 50 ether);
+        uint256 id = _createAsOwner(OTHER, 20 ether, 0, uint64(block.timestamp + 1));
+
+        vm.prank(OTHER);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ContinuityVault.CommitmentNotDue.selector, id, block.timestamp + 1
+            )
+        );
+        vault.executeCommitment(id);
+
+        vm.warp(block.timestamp + 1);
+        vm.prank(OTHER);
+        vault.executeCommitment(id);
+
+        vm.expectRevert(abi.encodeWithSelector(ContinuityVault.CommitmentInactive.selector, id));
+        vault.executeCommitment(id);
+        vm.expectRevert(abi.encodeWithSelector(ContinuityVault.InvalidCommitment.selector, 2));
+        vault.executeCommitment(2);
+    }
+
+    function testOneTimeExecutionTransferFailureRestoresState() public {
+        _depositAs(OWNER, 50 ether);
+        uint256 id = _createAsOwner(OTHER, 20 ether, 0, uint64(block.timestamp));
+        token.setFailTransfer(true);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(SafeERC20.SafeERC20FailedOperation.selector, address(token))
+        );
+        vault.executeCommitment(id);
+
+        ContinuityVault.Commitment memory commitment = vault.getCommitment(id);
+        _eq(commitment.amount, 20 ether);
+        _true(commitment.active);
+        _eq(vault.protectedBalance(), 20 ether);
+        _eq(token.balanceOf(address(vault)), 50 ether);
+        _eq(token.balanceOf(OTHER), 0);
+    }
+
+    function testRecurringExecutionRollsReservationAndNoCatchUp() public {
+        _depositAs(OWNER, 100 ether);
+        uint64 interval = 1 days;
+        uint256 id = _createAsOwner(OTHER, 30 ether, interval, uint64(block.timestamp));
+
+        vm.warp(block.timestamp + 10 days);
+        uint256 executionTimestamp = block.timestamp;
+        vm.expectEmit(true, true, false, true);
+        emit CommitmentExecuted(id, OTHER, 30 ether, executionTimestamp + uint256(interval));
+        vm.prank(NEW_OWNER);
+        vault.executeCommitment(id);
+
+        ContinuityVault.Commitment memory commitment = vault.getCommitment(id);
+        _eq(commitment.amount, 30 ether);
+        _eq(commitment.interval, interval);
+        _eq(commitment.nextDue, executionTimestamp + uint256(interval));
+        _true(commitment.active);
+        _eq(vault.protectedBalance(), 30 ether);
+        _eq(token.balanceOf(OTHER), 30 ether);
+        _eq(token.balanceOf(address(vault)), 70 ether);
+        _eq(vault.availableBalance(), 40 ether);
+    }
+
+    function testRecurringSameOccurrenceCannotExecuteTwiceAndRunsAgainLater() public {
+        _depositAs(OWNER, 100 ether);
+        uint64 interval = 1 days;
+        uint256 id = _createAsOwner(OTHER, 30 ether, interval, uint64(block.timestamp));
+
+        vault.executeCommitment(id);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ContinuityVault.CommitmentNotDue.selector, id, block.timestamp + interval
+            )
+        );
+        vault.executeCommitment(id);
+
+        vm.warp(block.timestamp + interval);
+        vault.executeCommitment(id);
+        _eq(token.balanceOf(OTHER), 60 ether);
+        _eq(vault.protectedBalance(), 30 ether);
+    }
+
+    function testRecurringTransferFailureRestoresNextDue() public {
+        _depositAs(OWNER, 50 ether);
+        uint64 interval = 1 days;
+        uint64 due = uint64(block.timestamp);
+        uint256 id = _createAsOwner(OTHER, 20 ether, interval, due);
+        token.setFailTransfer(true);
+
+        vm.warp(block.timestamp + 3 days);
+        vm.expectRevert(
+            abi.encodeWithSelector(SafeERC20.SafeERC20FailedOperation.selector, address(token))
+        );
+        vault.executeCommitment(id);
+
+        ContinuityVault.Commitment memory commitment = vault.getCommitment(id);
+        _eq(commitment.nextDue, due);
+        _true(commitment.active);
+        _eq(vault.protectedBalance(), 20 ether);
+    }
+
+    function testRecurringExecutionIsPermissionlessInCaution() public {
+        _depositAs(OWNER, 50 ether);
+        uint256 id = _createAsOwner(OTHER, 20 ether, 1, uint64(block.timestamp));
+        vm.warp(vault.activeUntil() + 1);
+
+        vm.prank(NEW_OWNER);
+        vault.executeCommitment(id);
+        _eq(token.balanceOf(OTHER), 20 ether);
+    }
+
+    function testRecurringNextDueOverflowRevertsWithoutNarrowing() public {
+        _depositAs(OWNER, 20 ether);
+        uint256 id = _createAsOwner(OTHER, 10 ether, 1, uint64(block.timestamp));
+        uint64 originalDue = uint64(block.timestamp);
+        vm.warp(type(uint64).max);
+
+        vm.expectRevert(ContinuityVault.TimestampOverflow.selector);
+        vault.executeCommitment(id);
+
+        ContinuityVault.Commitment memory commitment = vault.getCommitment(id);
+        _eq(commitment.nextDue, originalDue);
+        _true(commitment.active);
+    }
+
+    function testProtectedCapitalCannotBeWithdrawn() public {
+        _depositAs(OWNER, 100 ether);
+        _createAsOwner(OTHER, 30 ether, 0, uint64(block.timestamp));
+        _eq(vault.availableBalance(), 70 ether);
+
+        vm.prank(OWNER);
+        vault.withdrawAvailable(NEW_OWNER, 70 ether);
+        _eq(token.balanceOf(address(vault)), 30 ether);
+        _eq(vault.protectedBalance(), 30 ether);
+
+        vm.prank(OWNER);
+        vm.expectRevert(
+            abi.encodeWithSelector(ContinuityVault.InsufficientAvailableBalance.selector, 1, 0)
+        );
+        vault.withdrawAvailable(NEW_OWNER, 1);
+
+        vm.prank(OWNER);
+        vm.expectRevert(
+            abi.encodeWithSelector(ContinuityVault.InsufficientAvailableBalance.selector, 71, 0)
+        );
+        vault.withdrawAvailable(NEW_OWNER, 71);
+    }
+
+    function testOneTimeAndRecurringReservationAccounting() public {
+        _depositAs(OWNER, 100 ether);
+        uint256 oneTimeId = _createAsOwner(OTHER, 20 ether, 0, uint64(block.timestamp));
+        uint256 recurringId = _createAsOwner(NEW_OWNER, 30 ether, 1, uint64(block.timestamp));
+        _eq(vault.protectedBalance(), 50 ether);
+        _eq(vault.availableBalance(), 50 ether);
+
+        vault.executeCommitment(oneTimeId);
+        _eq(vault.protectedBalance(), 30 ether);
+        _eq(vault.availableBalance(), 50 ether);
+        vault.executeCommitment(recurringId);
+        _eq(vault.protectedBalance(), 30 ether);
+        _eq(vault.availableBalance(), 20 ether);
+    }
+
+    function testUnderfundingSaturatesAvailableAndDepositRestoresFunding() public {
+        _depositAs(OWNER, 100 ether);
+        uint256 id = _createAsOwner(OTHER, 30 ether, 1, uint64(block.timestamp));
+
+        for (uint256 i = 0; i < 3; ++i) {
+            vault.executeCommitment(id);
+            vm.warp(block.timestamp + 1);
+        }
+
+        _eq(token.balanceOf(address(vault)), 10 ether);
+        _eq(vault.protectedBalance(), 30 ether);
+        _eq(vault.availableBalance(), 0);
+        _false(vault.isFunded());
+
+        vm.prank(OWNER);
+        vm.expectRevert(
+            abi.encodeWithSelector(ContinuityVault.InsufficientAvailableBalance.selector, 1, 0)
+        );
+        vault.withdrawAvailable(OWNER, 1);
+
+        _depositAs(OWNER, 20 ether);
+        _true(vault.isFunded());
+        _eq(vault.availableBalance(), 0);
+    }
+
+    function testUnderfundedDueCommitmentCanExecuteIfIndividuallyFunded() public {
+        _depositAs(OWNER, 60 ether);
+        uint256 firstId = _createAsOwner(OTHER, 30 ether, 1, uint64(block.timestamp));
+        uint256 secondId = _createAsOwner(NEW_OWNER, 30 ether, 1, uint64(block.timestamp));
+
+        vault.executeCommitment(firstId);
+        _false(vault.isFunded());
+        _eq(token.balanceOf(address(vault)), 30 ether);
+
+        vault.executeCommitment(secondId);
+        _eq(token.balanceOf(address(vault)), 0);
+        _eq(vault.protectedBalance(), 60 ether);
+    }
+
+    function testUnderfundedDueCommitmentBelowAmountReverts() public {
+        _depositAs(OWNER, 50 ether);
+        uint256 id = _createAsOwner(OTHER, 30 ether, 1, uint64(block.timestamp));
+        vault.executeCommitment(id);
+        vm.warp(block.timestamp + 1);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ContinuityVault.InsufficientVaultBalance.selector, 30 ether, 20 ether
+            )
+        );
+        vault.executeCommitment(id);
+    }
+
     function testUnknownCommitmentRejectedAndCountEmpty() public {
         _eq(vault.commitmentCount(), 0);
         vm.expectRevert(abi.encodeWithSelector(ContinuityVault.InvalidCommitment.selector, 1));
@@ -419,5 +821,13 @@ contract ContinuityVaultTest {
         token.approve(address(vault), amount);
         vault.deposit(amount);
         vm.stopPrank();
+    }
+
+    function _createAsOwner(address recipient, uint128 amount, uint64 interval, uint64 firstDue)
+        private
+        returns (uint256 id)
+    {
+        vm.prank(OWNER);
+        id = vault.createCommitment(recipient, amount, interval, firstDue);
     }
 }

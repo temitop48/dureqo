@@ -157,4 +157,82 @@ contract ContinuityVault is Ownable2Step, ReentrancyGuard {
         usdg.safeTransfer(recipient, amount);
         emit AvailableWithdrawn(recipient, amount);
     }
+
+    function createCommitment(address recipient, uint128 amount, uint64 interval, uint64 firstDue)
+        external
+        onlyOwner
+        returns (uint256 id)
+    {
+        if (mode() != Mode.ACTIVE) revert NotActiveMode();
+        if (recipient == address(0)) revert ZeroAddress();
+        if (amount == 0) revert ZeroAmount();
+        if (uint256(firstDue) < block.timestamp) revert InvalidDueTime();
+
+        uint256 actualBalance = usdg.balanceOf(address(this));
+        if (protectedBalance > type(uint256).max - uint256(amount)) {
+            revert InsufficientFundingForCommitment(type(uint256).max, actualBalance);
+        }
+        uint256 newProtectedBalance = protectedBalance + uint256(amount);
+        if (actualBalance < newProtectedBalance) {
+            revert InsufficientFundingForCommitment(newProtectedBalance, actualBalance);
+        }
+
+        id = ++commitmentCount;
+        _commitments[id] = Commitment({
+            recipient: recipient,
+            amount: amount,
+            interval: interval,
+            nextDue: firstDue,
+            active: true
+        });
+        protectedBalance = newProtectedBalance;
+
+        emit CommitmentCreated(id, recipient, amount, interval, firstDue);
+    }
+
+    function cancelCommitment(uint256 id) external onlyOwner {
+        if (mode() != Mode.ACTIVE) revert NotActiveMode();
+        if (id == 0 || id > commitmentCount) revert InvalidCommitment(id);
+
+        Commitment storage commitment = _commitments[id];
+        if (!commitment.active) revert CommitmentInactive(id);
+
+        commitment.active = false;
+        protectedBalance -= uint256(commitment.amount);
+
+        emit CommitmentCancelled(id);
+    }
+
+    function executeCommitment(uint256 id) external nonReentrant {
+        if (id == 0 || id > commitmentCount) revert InvalidCommitment(id);
+
+        Commitment storage commitment = _commitments[id];
+        if (!commitment.active) revert CommitmentInactive(id);
+        if (block.timestamp < uint256(commitment.nextDue)) {
+            revert CommitmentNotDue(id, commitment.nextDue);
+        }
+
+        uint256 actualBalance = usdg.balanceOf(address(this));
+        if (actualBalance < uint256(commitment.amount)) {
+            revert InsufficientVaultBalance(commitment.amount, actualBalance);
+        }
+
+        address recipient = commitment.recipient;
+        uint128 amount = commitment.amount;
+        uint64 nextDue = commitment.nextDue;
+
+        if (commitment.interval == 0) {
+            commitment.active = false;
+            protectedBalance -= uint256(amount);
+        } else {
+            uint256 nextDue256 = block.timestamp + uint256(commitment.interval);
+            if (nextDue256 > type(uint64).max) revert TimestampOverflow();
+            // forge-lint: disable-next-line(unsafe-typecast) -- bounded above.
+            nextDue = uint64(nextDue256);
+            commitment.nextDue = nextDue;
+        }
+
+        usdg.safeTransfer(recipient, amount);
+        emit CommitmentExecuted(id, recipient, amount, nextDue);
+    }
 }
