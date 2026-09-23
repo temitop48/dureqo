@@ -4,10 +4,14 @@ pragma solidity 0.8.30;
 import { Ownable2Step } from "../lib/openzeppelin-contracts/contracts/access/Ownable2Step.sol";
 import { Ownable } from "../lib/openzeppelin-contracts/contracts/access/Ownable.sol";
 import { IERC20 } from "../lib/openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
+import { SafeERC20 } from "../lib/openzeppelin-contracts/contracts/token/ERC20/utils/SafeERC20.sol";
+import { ReentrancyGuard } from "../lib/openzeppelin-contracts/contracts/utils/ReentrancyGuard.sol";
 
 /// @title ContinuityVault
 /// @notice Phase 2 structural foundation for DUREQO's single-asset vault.
-contract ContinuityVault is Ownable2Step {
+contract ContinuityVault is Ownable2Step, ReentrancyGuard {
+    using SafeERC20 for IERC20;
+
     enum Mode {
         ACTIVE,
         CAUTION,
@@ -131,5 +135,26 @@ contract ContinuityVault is Ownable2Step {
 
     function isFunded() public view returns (bool) {
         return usdg.balanceOf(address(this)) >= protectedBalance;
+    }
+
+    /// @notice Deposit USDG into the treasury without creating depositor claims.
+    function deposit(uint256 amount) external nonReentrant {
+        if (amount == 0) revert ZeroAmount();
+
+        usdg.safeTransferFrom(msg.sender, address(this), amount);
+        emit Deposited(msg.sender, amount);
+    }
+
+    /// @notice Withdraw unreserved USDG while the vault remains operational.
+    function withdrawAvailable(address recipient, uint256 amount) external onlyOwner nonReentrant {
+        if (recipient == address(0)) revert ZeroAddress();
+        if (amount == 0) revert ZeroAmount();
+        if (mode() != Mode.ACTIVE) revert NotActiveMode();
+
+        uint256 available = availableBalance();
+        if (amount > available) revert InsufficientAvailableBalance(amount, available);
+
+        usdg.safeTransfer(recipient, amount);
+        emit AvailableWithdrawn(recipient, amount);
     }
 }

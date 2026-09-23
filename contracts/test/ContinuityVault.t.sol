@@ -3,6 +3,7 @@ pragma solidity 0.8.30;
 
 import { ContinuityVault } from "../src/ContinuityVault.sol";
 import { IERC20 } from "../lib/openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
+import { SafeERC20 } from "../lib/openzeppelin-contracts/contracts/token/ERC20/utils/SafeERC20.sol";
 
 interface Vm {
     function warp(uint256) external;
@@ -11,12 +12,16 @@ interface Vm {
     function stopPrank() external;
     function expectRevert(bytes4) external;
     function expectRevert(bytes calldata) external;
+    function expectEmit(bool checkTopic1, bool checkTopic2, bool checkTopic3, bool checkData)
+        external;
 }
 
 contract MockUSDC is IERC20 {
     mapping(address => uint256) private _balances;
     mapping(address => mapping(address => uint256)) private _allowances;
     uint256 private _totalSupply;
+    bool private _failTransfer;
+    bool private _failTransferFrom;
 
     function mint(address account, uint256 amount) external {
         _balances[account] += amount;
@@ -33,6 +38,7 @@ contract MockUSDC is IERC20 {
     }
 
     function transfer(address to, uint256 amount) external returns (bool) {
+        if (_failTransfer) return false;
         _balances[msg.sender] -= amount;
         _balances[to] += amount;
         emit Transfer(msg.sender, to, amount);
@@ -50,6 +56,7 @@ contract MockUSDC is IERC20 {
     }
 
     function transferFrom(address from, address to, uint256 amount) external returns (bool) {
+        if (_failTransferFrom) return false;
         uint256 allowed = _allowances[from][msg.sender];
         require(allowed >= amount);
         _allowances[from][msg.sender] = allowed - amount;
@@ -58,9 +65,20 @@ contract MockUSDC is IERC20 {
         emit Transfer(from, to, amount);
         return true;
     }
+
+    function setFailTransfer(bool value) external {
+        _failTransfer = value;
+    }
+
+    function setFailTransferFrom(bool value) external {
+        _failTransferFrom = value;
+    }
 }
 
 contract ContinuityVaultTest {
+    event Deposited(address indexed depositor, uint256 amount);
+    event AvailableWithdrawn(address indexed recipient, uint256 amount);
+
     Vm private constant vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
     address private constant OWNER = address(0x1001);
     address private constant NEW_OWNER = address(0x1002);
@@ -183,6 +201,196 @@ contract ContinuityVaultTest {
         _true(vault.isFunded());
     }
 
+    function testOwnerCanDepositExactAmountAndEmitsEvent() public {
+        uint256 amount = 100 ether;
+        token.mint(OWNER, amount);
+        vm.prank(OWNER);
+        token.approve(address(vault), amount);
+
+        vm.expectEmit(true, false, false, true);
+        emit Deposited(OWNER, amount);
+        vm.prank(OWNER);
+        vault.deposit(amount);
+
+        _eq(token.balanceOf(address(vault)), amount);
+        _eq(vault.availableBalance(), amount);
+    }
+
+    function testNonOwnerDepositDoesNotGrantAuthorityOrChangeVaultState() public {
+        uint256 amount = 40 ether;
+        uint256 heartbeat = vault.lastHeartbeat();
+        token.mint(OTHER, amount);
+        vm.startPrank(OTHER);
+        token.approve(address(vault), amount);
+        vault.deposit(amount);
+        vm.expectRevert(
+            abi.encodeWithSelector(bytes4(keccak256("OwnableUnauthorizedAccount(address)")), OTHER)
+        );
+        vault.withdrawAvailable(OTHER, 1);
+        vm.stopPrank();
+
+        _eq(vault.owner(), OWNER);
+        _eq(vault.pendingOwner(), address(0));
+        _eq(vault.protectedBalance(), 0);
+        _eq(vault.lastHeartbeat(), heartbeat);
+        _eq(token.balanceOf(address(vault)), amount);
+    }
+
+    function testDepositsAccumulateThroughActualTokenBalance() public {
+        _depositAs(OWNER, 30 ether);
+        _depositAs(OTHER, 70 ether);
+
+        _eq(token.balanceOf(address(vault)), 100 ether);
+        _eq(vault.availableBalance(), 100 ether);
+        _true(vault.isFunded());
+    }
+
+    function testDepositZeroReverts() public {
+        vm.prank(OTHER);
+        vm.expectRevert(ContinuityVault.ZeroAmount.selector);
+        vault.deposit(0);
+    }
+
+    function testDirectTransferUpdatesAvailableBalanceWithoutAuthority() public {
+        uint256 amount = 25 ether;
+        token.mint(OTHER, amount);
+        vm.prank(OTHER);
+        require(token.transfer(address(vault), amount));
+
+        _eq(vault.availableBalance(), amount);
+        _eq(vault.protectedBalance(), 0);
+        vm.prank(OTHER);
+        vm.expectRevert(
+            abi.encodeWithSelector(bytes4(keccak256("OwnableUnauthorizedAccount(address)")), OTHER)
+        );
+        vault.withdrawAvailable(OTHER, 1);
+    }
+
+    function testDirectTransferAndDepositCoexist() public {
+        token.mint(OTHER, 20 ether);
+        vm.prank(OTHER);
+        require(token.transfer(address(vault), 20 ether));
+        _depositAs(OWNER, 80 ether);
+
+        _eq(token.balanceOf(address(vault)), 100 ether);
+        _eq(vault.availableBalance(), 100 ether);
+        _eq(vault.protectedBalance(), 0);
+    }
+
+    function testOwnerWithdrawsAvailableAndEmitsEvent() public {
+        _depositAs(OWNER, 100 ether);
+
+        vm.expectEmit(true, false, false, true);
+        emit AvailableWithdrawn(OTHER, 40 ether);
+        vm.prank(OWNER);
+        vault.withdrawAvailable(OTHER, 40 ether);
+
+        _eq(token.balanceOf(address(vault)), 60 ether);
+        _eq(token.balanceOf(OTHER), 40 ether);
+        _eq(vault.availableBalance(), 60 ether);
+    }
+
+    function testOwnerCanWithdrawExactlyAvailableBalance() public {
+        _depositAs(OWNER, 100 ether);
+        vm.prank(OWNER);
+        vault.withdrawAvailable(OTHER, 100 ether);
+
+        _eq(token.balanceOf(address(vault)), 0);
+        _eq(vault.availableBalance(), 0);
+        _true(vault.isFunded());
+    }
+
+    function testWithdrawalAboveAvailableRevertsWithExactError() public {
+        _depositAs(OWNER, 100 ether);
+        vm.prank(OWNER);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ContinuityVault.InsufficientAvailableBalance.selector, 101 ether, 100 ether
+            )
+        );
+        vault.withdrawAvailable(OTHER, 101 ether);
+
+        _eq(token.balanceOf(address(vault)), 100 ether);
+    }
+
+    function testWithdrawalRejectsZeroAmountAndRecipient() public {
+        _depositAs(OWNER, 100 ether);
+
+        vm.prank(OWNER);
+        vm.expectRevert(ContinuityVault.ZeroAmount.selector);
+        vault.withdrawAvailable(OTHER, 0);
+
+        vm.prank(OWNER);
+        vm.expectRevert(ContinuityVault.ZeroAddress.selector);
+        vault.withdrawAvailable(address(0), 1);
+    }
+
+    function testNonOwnerCannotWithdrawEvenWithValidArguments() public {
+        _depositAs(OWNER, 100 ether);
+        vm.prank(OTHER);
+        vm.expectRevert(
+            abi.encodeWithSelector(bytes4(keccak256("OwnableUnauthorizedAccount(address)")), OTHER)
+        );
+        vault.withdrawAvailable(OTHER, 1);
+    }
+
+    function testWithdrawalAllowedExactlyAtActiveUntil() public {
+        _depositAs(OWNER, 10 ether);
+        vm.warp(vault.activeUntil());
+        vm.prank(OWNER);
+        vault.withdrawAvailable(OTHER, 10 ether);
+
+        _eq(token.balanceOf(address(vault)), 0);
+    }
+
+    function testWithdrawalBlockedImmediatelyAfterActiveUntil() public {
+        _depositAs(OWNER, 10 ether);
+        vm.warp(vault.activeUntil() + 1);
+        vm.prank(OWNER);
+        vm.expectRevert(ContinuityVault.NotActiveMode.selector);
+        vault.withdrawAvailable(OTHER, 1);
+    }
+
+    function testCautionWithdrawalReverts() public {
+        _depositAs(OWNER, 10 ether);
+        vm.warp(vault.continuityEligibleAt());
+        vm.prank(OWNER);
+        vm.expectRevert(ContinuityVault.NotActiveMode.selector);
+        vault.withdrawAvailable(OTHER, 1);
+    }
+
+    function testDepositTransferFailureLeavesAccountingUnchanged() public {
+        token.mint(OWNER, 100 ether);
+        vm.prank(OWNER);
+        token.approve(address(vault), 100 ether);
+        token.setFailTransferFrom(true);
+
+        vm.prank(OWNER);
+        vm.expectRevert(
+            abi.encodeWithSelector(SafeERC20.SafeERC20FailedOperation.selector, address(token))
+        );
+        vault.deposit(100 ether);
+
+        _eq(token.balanceOf(address(vault)), 0);
+        _eq(token.balanceOf(OWNER), 100 ether);
+        _eq(vault.availableBalance(), 0);
+    }
+
+    function testWithdrawalTransferFailureLeavesAccountingUnchanged() public {
+        _depositAs(OWNER, 100 ether);
+        token.setFailTransfer(true);
+
+        vm.prank(OWNER);
+        vm.expectRevert(
+            abi.encodeWithSelector(SafeERC20.SafeERC20FailedOperation.selector, address(token))
+        );
+        vault.withdrawAvailable(OTHER, 40 ether);
+
+        _eq(token.balanceOf(address(vault)), 100 ether);
+        _eq(token.balanceOf(OTHER), 0);
+        _eq(vault.availableBalance(), 100 ether);
+    }
+
     function testUnknownCommitmentRejectedAndCountEmpty() public {
         _eq(vault.commitmentCount(), 0);
         vm.expectRevert(abi.encodeWithSelector(ContinuityVault.InvalidCommitment.selector, 1));
@@ -203,5 +411,13 @@ contract ContinuityVaultTest {
 
     function _false(bool value) private pure {
         require(!value);
+    }
+
+    function _depositAs(address depositor, uint256 amount) private {
+        token.mint(depositor, amount);
+        vm.startPrank(depositor);
+        token.approve(address(vault), amount);
+        vault.deposit(amount);
+        vm.stopPrank();
     }
 }
