@@ -163,6 +163,41 @@ contract ContinuityVault is Ownable2Step, ReentrancyGuard {
         emit ContinuityActivated(msg.sender, block.timestamp);
     }
 
+    function requestRecovery() external onlyOwner {
+        if (mode() != Mode.CONTINUITY) revert NotActiveMode();
+        if (recoveryRequestedAt != 0) revert RecoveryAlreadyRequested();
+        if (block.timestamp > type(uint64).max) revert TimestampOverflow();
+
+        uint256 requestedAt = block.timestamp;
+        uint256 executableAt = requestedAt + uint256(recoveryDelay);
+        // forge-lint: disable-next-line(unsafe-typecast) -- bounded above by the preceding check.
+        recoveryRequestedAt = uint64(requestedAt);
+        emit RecoveryRequested(requestedAt, executableAt);
+    }
+
+    function cancelRecovery() external onlyOwner {
+        if (mode() != Mode.CONTINUITY) revert NotActiveMode();
+        if (recoveryRequestedAt == 0) revert RecoveryNotRequested();
+
+        recoveryRequestedAt = 0;
+        emit RecoveryCancelled();
+    }
+
+    function completeRecovery() external onlyOwner {
+        if (mode() != Mode.CONTINUITY) revert NotActiveMode();
+        if (recoveryRequestedAt == 0) revert RecoveryNotRequested();
+
+        uint256 executableAt = uint256(recoveryRequestedAt) + uint256(recoveryDelay);
+        if (block.timestamp < executableAt) revert RecoveryDelayNotElapsed(executableAt);
+        if (block.timestamp > type(uint64).max) revert TimestampOverflow();
+
+        continuityActivated = false;
+        recoveryRequestedAt = 0;
+        lastHeartbeat = uint64(block.timestamp);
+
+        emit RecoveryCompleted(block.timestamp);
+    }
+
     /// @notice Deposit USDG into the treasury without creating depositor claims.
     function deposit(uint256 amount) external nonReentrant {
         if (amount == 0) revert ZeroAmount();

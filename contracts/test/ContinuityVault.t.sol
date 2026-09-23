@@ -91,6 +91,9 @@ contract ContinuityVaultTest {
     );
     event Heartbeat(uint256 timestamp);
     event ContinuityActivated(address indexed caller, uint256 timestamp);
+    event RecoveryRequested(uint256 requestedAt, uint256 executableAt);
+    event RecoveryCancelled();
+    event RecoveryCompleted(uint256 timestamp);
 
     Vm private constant vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
     address private constant OWNER = address(0x1001);
@@ -1067,6 +1070,305 @@ contract ContinuityVaultTest {
         vault.cancelCommitment(recurringId);
     }
 
+    function testRequestRecoveryStoresTimestampAndEmitsDeadline() public {
+        _activateContinuity();
+        uint256 requestedAt = block.timestamp;
+        uint256 executableAt = requestedAt + RECOVERY_DELAY;
+
+        vm.expectEmit(false, false, false, true);
+        emit RecoveryRequested(requestedAt, executableAt);
+        vm.prank(OWNER);
+        vault.requestRecovery();
+
+        _eq(vault.recoveryRequestedAt(), requestedAt);
+        _eq(uint256(vault.mode()), uint256(ContinuityVault.Mode.CONTINUITY));
+    }
+
+    function testRecoveryRequestRequiresContinuityOwnerAndIsSinglePendingRequest() public {
+        vm.prank(OWNER);
+        vm.expectRevert(ContinuityVault.NotActiveMode.selector);
+        vault.requestRecovery();
+
+        _activateContinuity();
+        vm.prank(OTHER);
+        vm.expectRevert(
+            abi.encodeWithSelector(bytes4(keccak256("OwnableUnauthorizedAccount(address)")), OTHER)
+        );
+        vault.requestRecovery();
+
+        vm.prank(OWNER);
+        vault.requestRecovery();
+        vm.prank(OWNER);
+        vm.expectRevert(ContinuityVault.RecoveryAlreadyRequested.selector);
+        vault.requestRecovery();
+    }
+
+    function testCancelRecoveryClearsOnlyRequestAndAllowsFreshRequest() public {
+        _depositAs(OWNER, 50 ether);
+        _createAsOwner(OTHER, 20 ether, 1, uint64(block.timestamp));
+        _activateContinuity();
+        uint64 heartbeat = vault.lastHeartbeat();
+        uint256 protectedAmount = vault.protectedBalance();
+        uint256 commitmentTotal = vault.commitmentCount();
+        uint256 balance = token.balanceOf(address(vault));
+
+        vm.prank(OWNER);
+        vault.requestRecovery();
+        uint256 firstRequest = vault.recoveryRequestedAt();
+
+        vm.prank(OTHER);
+        vm.expectRevert(
+            abi.encodeWithSelector(bytes4(keccak256("OwnableUnauthorizedAccount(address)")), OTHER)
+        );
+        vault.cancelRecovery();
+
+        vm.prank(OWNER);
+        vault.cancelRecovery();
+        vm.expectRevert(ContinuityVault.RecoveryNotRequested.selector);
+        vm.prank(OWNER);
+        vault.cancelRecovery();
+        _eq(vault.recoveryRequestedAt(), 0);
+        _true(vault.continuityActivated());
+        _eq(vault.lastHeartbeat(), heartbeat);
+        _eq(vault.protectedBalance(), protectedAmount);
+        _eq(vault.commitmentCount(), commitmentTotal);
+        _eq(token.balanceOf(address(vault)), balance);
+
+        vm.warp(firstRequest + 1);
+        vm.prank(OWNER);
+        vault.requestRecovery();
+        _eq(vault.recoveryRequestedAt(), firstRequest + 1);
+    }
+
+    function testCompleteRecoveryRequiresRequestAndExactDelay() public {
+        _activateContinuity();
+        vm.prank(OWNER);
+        vm.expectRevert(ContinuityVault.RecoveryNotRequested.selector);
+        vault.completeRecovery();
+
+        vm.prank(OWNER);
+        vault.requestRecovery();
+        uint256 executableAt = uint256(vault.recoveryRequestedAt()) + RECOVERY_DELAY;
+
+        vm.warp(executableAt - 1);
+        vm.prank(OWNER);
+        vm.expectRevert(
+            abi.encodeWithSelector(ContinuityVault.RecoveryDelayNotElapsed.selector, executableAt)
+        );
+        vault.completeRecovery();
+
+        vm.warp(executableAt);
+        vm.prank(OWNER);
+        vault.completeRecovery();
+        _false(vault.continuityActivated());
+        _eq(vault.recoveryRequestedAt(), 0);
+        _eq(vault.lastHeartbeat(), executableAt);
+        _eq(uint256(vault.mode()), uint256(ContinuityVault.Mode.ACTIVE));
+        _eq(vault.activeUntil(), executableAt + HEARTBEAT);
+        _eq(vault.continuityEligibleAt(), executableAt + HEARTBEAT + GRACE);
+    }
+
+    function testCompleteRecoveryAfterDelayAndNonOwnerCannotComplete() public {
+        _activateContinuity();
+        vm.prank(OWNER);
+        vault.requestRecovery();
+        uint256 executableAt = uint256(vault.recoveryRequestedAt()) + RECOVERY_DELAY;
+
+        vm.warp(executableAt);
+        vm.prank(OTHER);
+        vm.expectRevert(
+            abi.encodeWithSelector(bytes4(keccak256("OwnableUnauthorizedAccount(address)")), OTHER)
+        );
+        vault.completeRecovery();
+        _true(vault.continuityActivated());
+        _eq(vault.recoveryRequestedAt(), executableAt - RECOVERY_DELAY);
+
+        vm.warp(executableAt + 1);
+        vm.prank(OWNER);
+        vault.completeRecovery();
+        _false(vault.continuityActivated());
+    }
+
+    function testRecoveryDelayDoesNotExpandContinuityAuthority() public {
+        _depositAs(OWNER, 50 ether);
+        uint256 id = _createAsOwner(OTHER, 20 ether, 1, uint64(block.timestamp));
+        _activateContinuity();
+        vm.prank(OWNER);
+        vault.requestRecovery();
+
+        vm.prank(OWNER);
+        vm.expectRevert(ContinuityVault.NotActiveMode.selector);
+        vault.withdrawAvailable(OWNER, 1);
+        vm.prank(OWNER);
+        vm.expectRevert(ContinuityVault.NotActiveMode.selector);
+        vault.createCommitment(OWNER, 1, 0, uint64(block.timestamp));
+        vm.prank(OWNER);
+        vm.expectRevert(ContinuityVault.NotActiveMode.selector);
+        vault.cancelCommitment(id);
+        vm.prank(OWNER);
+        vm.expectRevert(ContinuityVault.NotActiveMode.selector);
+        vault.checkIn();
+        vm.prank(OWNER);
+        vm.expectRevert(ContinuityVault.NotActiveMode.selector);
+        vault.transferOwnership(NEW_OWNER);
+        vm.prank(OWNER);
+        vm.expectRevert(ContinuityVault.OwnershipRenunciationDisabled.selector);
+        vault.renounceOwnership();
+
+        _depositAs(OTHER, 10 ether);
+        vm.prank(OTHER);
+        vault.executeCommitment(id);
+        _eq(token.balanceOf(OTHER), 20 ether);
+    }
+
+    function testRecoveryPreservesFinancialStateAndActiveCommitment() public {
+        _depositAs(OWNER, 100 ether);
+        uint256 id = _createAsOwner(OTHER, 30 ether, 1, uint64(block.timestamp + 1));
+        uint256 balance = token.balanceOf(address(vault));
+        uint256 protectedAmount = vault.protectedBalance();
+        uint256 commitmentTotal = vault.commitmentCount();
+        ContinuityVault.Commitment memory beforeRecovery = vault.getCommitment(id);
+
+        _activateContinuity();
+        vm.prank(OWNER);
+        vault.requestRecovery();
+        vm.warp(uint256(vault.recoveryRequestedAt()) + RECOVERY_DELAY);
+        vm.prank(OWNER);
+        vault.completeRecovery();
+
+        _eq(token.balanceOf(address(vault)), balance);
+        _eq(vault.protectedBalance(), protectedAmount);
+        _eq(vault.commitmentCount(), commitmentTotal);
+        ContinuityVault.Commitment memory afterRecovery = vault.getCommitment(id);
+        _eq(afterRecovery.recipient, beforeRecovery.recipient);
+        _eq(afterRecovery.amount, beforeRecovery.amount);
+        _eq(afterRecovery.interval, beforeRecovery.interval);
+        _eq(afterRecovery.nextDue, beforeRecovery.nextDue);
+        _true(afterRecovery.active);
+    }
+
+    function testPendingOwnerCanControlRecoveryAfterAcceptance() public {
+        vm.prank(OWNER);
+        vault.transferOwnership(NEW_OWNER);
+        _activateContinuity();
+        vm.prank(NEW_OWNER);
+        vault.acceptOwnership();
+
+        vm.prank(NEW_OWNER);
+        vault.requestRecovery();
+        uint256 requestedAt = vault.recoveryRequestedAt();
+        vm.prank(OWNER);
+        vm.expectRevert(
+            abi.encodeWithSelector(bytes4(keccak256("OwnableUnauthorizedAccount(address)")), OWNER)
+        );
+        vault.completeRecovery();
+
+        vm.warp(requestedAt + RECOVERY_DELAY);
+        vm.prank(NEW_OWNER);
+        vault.completeRecovery();
+        _eq(vault.owner(), NEW_OWNER);
+        _eq(vault.lastHeartbeat(), requestedAt + RECOVERY_DELAY);
+    }
+
+    function testOwnershipAcceptanceDuringRecoveryTransfersRecoveryControl() public {
+        vm.prank(OWNER);
+        vault.transferOwnership(NEW_OWNER);
+        _activateContinuity();
+        vm.prank(OWNER);
+        vault.requestRecovery();
+        uint256 requestedAt = vault.recoveryRequestedAt();
+
+        vm.prank(NEW_OWNER);
+        vault.acceptOwnership();
+        _eq(vault.recoveryRequestedAt(), requestedAt);
+
+        vm.prank(OWNER);
+        vm.expectRevert(
+            abi.encodeWithSelector(bytes4(keccak256("OwnableUnauthorizedAccount(address)")), OWNER)
+        );
+        vault.cancelRecovery();
+
+        vm.warp(requestedAt + RECOVERY_DELAY);
+        vm.prank(NEW_OWNER);
+        vault.completeRecovery();
+        _eq(vault.owner(), NEW_OWNER);
+        _eq(vault.lastHeartbeat(), requestedAt + RECOVERY_DELAY);
+    }
+
+    function testRecoverySupportsTwoCompleteCyclesWithoutStaleState() public {
+        _activateContinuity();
+        vm.prank(OWNER);
+        vault.requestRecovery();
+        vm.warp(uint256(vault.recoveryRequestedAt()) + RECOVERY_DELAY);
+        vm.prank(OWNER);
+        vault.completeRecovery();
+        uint256 firstHeartbeat = vault.lastHeartbeat();
+
+        vm.warp(vault.continuityEligibleAt());
+        vault.activateContinuity();
+        vm.prank(OWNER);
+        vault.requestRecovery();
+        vm.warp(uint256(vault.recoveryRequestedAt()) + RECOVERY_DELAY);
+        vm.prank(OWNER);
+        vault.completeRecovery();
+
+        _false(vault.continuityActivated());
+        _eq(vault.recoveryRequestedAt(), 0);
+        _true(vault.lastHeartbeat() > firstHeartbeat);
+        _eq(uint256(vault.mode()), uint256(ContinuityVault.Mode.ACTIVE));
+    }
+
+    function testUnderfundedVaultCanRecover() public {
+        _depositAs(OWNER, 50 ether);
+        uint256 id = _createAsOwner(OTHER, 30 ether, 1, uint64(block.timestamp));
+        vault.executeCommitment(id);
+        _false(vault.isFunded());
+        _activateContinuity();
+
+        vm.prank(OWNER);
+        vault.requestRecovery();
+        vm.warp(uint256(vault.recoveryRequestedAt()) + RECOVERY_DELAY);
+        vm.prank(OWNER);
+        vault.completeRecovery();
+        _false(vault.isFunded());
+        _eq(uint256(vault.mode()), uint256(ContinuityVault.Mode.ACTIVE));
+    }
+
+    function testRecoveryTimestampNarrowingIsProtected() public {
+        vm.warp(type(uint64).max);
+        vault.activateContinuity();
+        vm.prank(OWNER);
+        vault.requestRecovery();
+        _eq(vault.recoveryRequestedAt(), type(uint64).max);
+
+        vm.warp(uint256(type(uint64).max) + RECOVERY_DELAY);
+        vm.prank(OWNER);
+        vm.expectRevert(ContinuityVault.TimestampOverflow.selector);
+        vault.completeRecovery();
+        _true(vault.continuityActivated());
+        _eq(vault.recoveryRequestedAt(), type(uint64).max);
+    }
+
+    function testRecoveryRequiresNewHeartbeatGraceCycleBeforeReactivation() public {
+        _activateContinuity();
+        vm.prank(OWNER);
+        vault.requestRecovery();
+        vm.warp(uint256(vault.recoveryRequestedAt()) + RECOVERY_DELAY);
+        vm.prank(OWNER);
+        vault.completeRecovery();
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ContinuityVault.ContinuityNotEligible.selector, vault.continuityEligibleAt()
+            )
+        );
+        vault.activateContinuity();
+
+        vm.warp(vault.continuityEligibleAt());
+        vault.activateContinuity();
+        _true(vault.continuityActivated());
+    }
+
     function testModeBoundariesIncludeContinuity() public {
         vm.warp(vault.activeUntil());
         _eq(uint256(vault.mode()), uint256(ContinuityVault.Mode.ACTIVE));
@@ -1114,5 +1416,10 @@ contract ContinuityVaultTest {
     {
         vm.prank(OWNER);
         id = vault.createCommitment(recipient, amount, interval, firstDue);
+    }
+
+    function _activateContinuity() private {
+        vm.warp(vault.continuityEligibleAt());
+        vault.activateContinuity();
     }
 }
