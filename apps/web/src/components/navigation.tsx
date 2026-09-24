@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import Link from "next/link";
-import { Button, TrackedLabel } from "./foundation";
+import { Web3IntegrationStatus, WalletControl } from "./web3-ui";
 
 const navigationItems = [
   { label: "Overview", href: "#overview", current: true },
@@ -42,12 +42,7 @@ export function TopNavigation() {
             <span className="network-badge__dot" aria-hidden="true" />
             Arbitrum Sepolia
           </span>
-          <div className="account-shell">
-            <TrackedLabel>Account</TrackedLabel>
-            <Button variant="quiet" disabled aria-label="Wallet connection is not available in Phase 10">
-              Not connected
-            </Button>
-          </div>
+          <WalletControl />
         </div>
       </div>
     </header>
@@ -61,7 +56,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       <main>{children}</main>
       <footer className="app-footer">
         <span>DUREQO / Financial Continuity Infrastructure</span>
-        <span>Foundation preview · no contract data connected</span>
+        <span>Arbitrum Sepolia · <Web3IntegrationStatus /></span>
       </footer>
     </div>
   );

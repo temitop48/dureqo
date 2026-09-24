@@ -240,6 +240,12 @@ button:focus-visible, a:focus-visible {
 .foundation-note p { margin: 0; max-width: 34rem; }
 
 .app-footer { border-top: 1px solid var(--border); color: var(--stone); display: flex; font-size: 0.65rem; justify-content: space-between; letter-spacing: 0.08em; margin: 0 auto; max-width: var(--content-width); padding: 1.5rem 2.5rem 2rem; text-transform: uppercase; }
+.web3-inline-error { color: var(--caution); display: block; font-size: 0.62rem; letter-spacing: 0.02em; line-height: 1.35; max-width: 12rem; text-transform: none; }
+.account-shell--connected { gap: 0.6rem; }
+.account-shell--connected .button--solid { background: var(--caution); color: var(--paper-raised); }
+.integration-status { align-items: center; display: inline-flex; gap: 0.45rem; letter-spacing: 0.08em; text-transform: uppercase; }
+.integration-status strong { color: var(--ink-soft); font-weight: 500; }
+.integration-status small { color: var(--stone); font-size: 0.6rem; letter-spacing: 0.04em; text-transform: none; }
 
 .application-container { margin: 0 auto; max-width: var(--content-width); padding: 1rem 2.5rem 2.5rem; }
 
