@@ -74,9 +74,9 @@ export function WalletControl() {
 
 export function Web3IntegrationStatus() {
   const { chainId: walletChainId, isConnected } = useAccount();
-  const owner = useReadContract({ address: publicWeb3Config.vaultAddress, abi: continuityVaultAbi, functionName: "owner" });
-  const configuredUsdg = useReadContract({ address: publicWeb3Config.vaultAddress, abi: continuityVaultAbi, functionName: "usdg" });
-  const mode = useReadContract({ address: publicWeb3Config.vaultAddress, abi: continuityVaultAbi, functionName: "mode" });
+  const owner = useReadContract({ address: publicWeb3Config.vaultAddress, abi: continuityVaultAbi, chainId: ARBITRUM_SEPOLIA_CHAIN_ID, functionName: "owner" });
+  const configuredUsdg = useReadContract({ address: publicWeb3Config.vaultAddress, abi: continuityVaultAbi, chainId: ARBITRUM_SEPOLIA_CHAIN_ID, functionName: "usdg" });
+  const mode = useReadContract({ address: publicWeb3Config.vaultAddress, abi: continuityVaultAbi, chainId: ARBITRUM_SEPOLIA_CHAIN_ID, functionName: "mode" });
   const failed = owner.isError || configuredUsdg.isError || mode.isError;
   const loading = owner.isLoading || configuredUsdg.isLoading || mode.isLoading;
   const walletWrongNetwork = isConnected && walletChainId !== ARBITRUM_SEPOLIA_CHAIN_ID;

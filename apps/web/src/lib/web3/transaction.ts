@@ -3,7 +3,7 @@
 import { useCallback } from "react";
 import type { ContractFunctionArgs } from "viem";
 import { useAccount, useWaitForTransactionReceipt, useWriteContract } from "wagmi";
-import { continuityVaultAbi } from "@/lib/web3/abis";
+import { continuityVaultAbi, usdgAbi } from "@/lib/web3/abis";
 import { ARBITRUM_SEPOLIA_CHAIN_ID, publicWeb3Config } from "@/lib/web3/config";
 import { normalizeWeb3Error } from "@/lib/web3/errors";
 
@@ -43,9 +43,11 @@ export function useVaultTransaction() {
     hash: write.data,
     query: { enabled: Boolean(write.data) },
   });
+  const isBusy = write.isPending || receipt.isLoading;
 
   const writeVault = useCallback(
     (request: VaultWriteRequest) => {
+      if (isBusy) throw new Error("A wallet transaction is already pending.");
       if (chainId !== ARBITRUM_SEPOLIA_CHAIN_ID) {
         throw new Error("Writes are blocked until the wallet is on Arbitrum Sepolia.");
       }
@@ -58,7 +60,7 @@ export function useVaultTransaction() {
         functionName: request.functionName,
       });
     },
-    [chainId, write],
+    [chainId, isBusy, write],
   );
 
   let phase: TransactionPhase = "idle";
@@ -73,9 +75,62 @@ export function useVaultTransaction() {
     ...write,
     hash: write.data,
     phase,
-    errorMessage: normalizeWeb3Error(write.error ?? receipt.error),
+    errorMessage: write.error || receipt.error ? normalizeWeb3Error(write.error ?? receipt.error) : undefined,
     writeVault,
     isConfirming: receipt.isLoading,
     isConfirmed: receipt.isSuccess,
+    isBusy,
+  };
+}
+
+export function useUsdGApproval() {
+  const { chainId } = useAccount();
+  const write = useWriteContract();
+  const receipt = useWaitForTransactionReceipt({
+    chainId: ARBITRUM_SEPOLIA_CHAIN_ID,
+    hash: write.data,
+    query: { enabled: Boolean(write.data) },
+  });
+  const isBusy = write.isPending || receipt.isLoading;
+
+  const approve = useCallback(
+    (amount: bigint) => {
+      if (isBusy) throw new Error("A wallet transaction is already pending.");
+      if (chainId !== ARBITRUM_SEPOLIA_CHAIN_ID) {
+        throw new Error("Approvals are blocked until the wallet is on Arbitrum Sepolia.");
+      }
+
+      write.writeContract({
+        abi: usdgAbi,
+        address: publicWeb3Config.usdgAddress,
+        args: [publicWeb3Config.vaultAddress, amount],
+        chainId: ARBITRUM_SEPOLIA_CHAIN_ID,
+        functionName: "approve",
+      });
+    },
+    [chainId, isBusy, write],
+  );
+
+  const phase = receipt.isSuccess
+    ? "confirmed"
+    : receipt.isLoading
+      ? "confirming"
+      : write.error
+        ? "failed"
+        : write.isPending
+          ? "awaiting-signature"
+          : write.data
+            ? "submitted"
+            : "idle";
+
+  return {
+    ...write,
+    hash: write.data,
+    phase,
+    errorMessage: write.error || receipt.error ? normalizeWeb3Error(write.error ?? receipt.error) : undefined,
+    isConfirming: receipt.isLoading,
+    isConfirmed: receipt.isSuccess,
+    isBusy,
+    approve,
   };
 }
