@@ -38,6 +38,21 @@ function modeName(mode: number | undefined) {
   return "Reading…";
 }
 
+type OperationalStatus = "active" | "caution" | "continuity" | "neutral";
+
+function ControllerModeLabel({ status }: { status: OperationalStatus }) {
+  return (
+    <div className="operation-card__authority">
+      <TrackedLabel>Identity / role</TrackedLabel>
+      <strong>Controller</strong>
+      <div className="operation-card__mode">
+        <span>Operational mode</span>
+        <StatusBadge status={status} />
+      </div>
+    </div>
+  );
+}
+
 function formatDuration(seconds: bigint | undefined) {
   if (seconds === undefined) return "—";
   const days = seconds / BigInt(86400);
@@ -78,9 +93,17 @@ function useRefreshReads() {
 
 function TransactionNote({ label, phase, error }: { label: string; phase: string; error?: string }) {
   if (phase === "idle" && !error) return null;
+  const phaseCopy: Record<string, string> = {
+    "awaiting-signature": "Wallet confirmation requested.",
+    submitted: "Transaction submitted.",
+    confirming: "Confirming on Arbitrum Sepolia…",
+    confirmed: "Confirmed onchain.",
+    rejected: "Wallet confirmation was rejected.",
+    failed: "Transaction failed or reverted.",
+  };
   return (
-    <p className={`transaction-note${error ? " transaction-note--error" : ""}`} role={error ? "alert" : undefined}>
-      {error ? `${label}: ${error}` : `${label}: ${phase.replaceAll("-", " ")}`}
+    <p className={`transaction-note transaction-note--${error ? "error" : phase}`} role={error ? "alert" : undefined}>
+      {error ? `${label}: ${error}` : `${label}: ${phaseCopy[phase] ?? phase}`}
     </p>
   );
 }
@@ -125,6 +148,9 @@ export function Phase12Dashboard() {
   const [withdrawRecipient, setWithdrawRecipient] = useState("");
   const [withdrawAmount, setWithdrawAmount] = useState("");
   const [formError, setFormError] = useState<string | null>(null);
+  const [activeModal, setActiveModal] = useState<"deposit" | "withdraw" | null>(null);
+  const modalRef = useRef<HTMLElement | null>(null);
+  const modalOriginRef = useRef<HTMLButtonElement | null>(null);
   const lastConfirmedHash = useRef<string | undefined>(undefined);
   const [currentTime, setCurrentTime] = useState<bigint | null>(null);
   const decimals = typeof vault.decimals === "number" ? vault.decimals : undefined;
@@ -260,7 +286,60 @@ export function Phase12Dashboard() {
   const continuityLabel = indicatorMode === undefined ? "Reading…" : recoveryRequested ? "Recovery pending" : modeName(indicatorMode);
   const countdownLabel = indicatorMode === MODE_ACTIVE ? "Active window" : indicatorMode === MODE_CAUTION && currentTime === null ? "Timing" : indicatorMode === MODE_CAUTION && eligibilityRemaining !== undefined ? "Time until eligible" : indicatorMode === MODE_CAUTION ? "Activation" : recoveryRequested && currentTime === null ? "Timing" : recoveryRequested && !recoveryReady ? "Recovery delay" : recoveryRequested ? "Recovery" : "Continuity";
   const countdownValue = indicatorMode === MODE_ACTIVE ? currentTime === null ? "Awaiting local clock" : activeWindowElapsed ? "Elapsed; awaiting refresh" : formatDuration(activeUntilRemaining) : indicatorMode === MODE_CAUTION && currentTime === null ? "Awaiting local clock" : indicatorMode === MODE_CAUTION && eligibilityRemaining !== undefined ? formatDuration(eligibilityRemaining) : indicatorMode === MODE_CAUTION ? "Continuity eligible" : recoveryRequested && currentTime === null ? "Awaiting local clock" : recoveryRequested && !recoveryReady && recoveryReadyAt !== undefined ? formatDuration(recoveryReadyAt - currentTime!) : recoveryRequested ? "Recovery ready" : "Active";
-  const operationalStatus: "active" | "caution" | "continuity" | "neutral" = operationalMode === MODE_ACTIVE ? "active" : operationalMode === MODE_CAUTION ? "caution" : operationalMode === MODE_CONTINUITY ? "continuity" : "neutral";
+  const operationalStatus: OperationalStatus = operationalMode === MODE_ACTIVE ? "active" : operationalMode === MODE_CAUTION ? "caution" : operationalMode === MODE_CONTINUITY ? "continuity" : "neutral";
+  const heartbeatState = operationalMode === MODE_ACTIVE ? "active" : recoveryRequested ? "recovery" : operationalMode === MODE_CAUTION ? "caution" : operationalMode === MODE_CONTINUITY ? "continuity" : "neutral";
+  const heartbeatLabel = heartbeatState === "active" ? "Active" : heartbeatState === "caution" ? "Overdue" : heartbeatState === "continuity" ? "Suspended" : heartbeatState === "recovery" ? "Recovery pending" : "Reading contract state";
+
+  const openModal = (kind: "deposit" | "withdraw", origin: HTMLButtonElement) => {
+    modalOriginRef.current = origin;
+    setFormError(null);
+    setActiveModal(kind);
+  };
+
+  const closeModal = useCallback(() => {
+    if (transactionPending) return;
+    const origin = modalOriginRef.current;
+    modalOriginRef.current = null;
+    setActiveModal(null);
+    window.requestAnimationFrame(() => origin?.focus());
+  }, [transactionPending]);
+
+  useEffect(() => {
+    if (!activeModal) return;
+
+    const modal = modalRef.current;
+    const focusable = () => Array.from(modal?.querySelectorAll<HTMLElement>("[data-modal-focusable]:not([disabled])") ?? []);
+    focusable()[0]?.focus();
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeModal();
+        return;
+      }
+      if (event.key !== "Tab") return;
+
+      const elements = focusable();
+      if (elements.length === 0) return;
+      const first = elements[0]!;
+      const last = elements[elements.length - 1]!;
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [activeModal, closeModal]);
 
   return (
     <div className="application-container" id="overview">
@@ -270,9 +349,13 @@ export function Phase12Dashboard() {
         <div className="application-hero__note"><TrackedLabel>Contract state.</TrackedLabel><TrackedLabel>Wallet authority.</TrackedLabel><Divider /><p>Every balance and operation below is read from the deployed vault and USDG contracts.</p></div>
       </section>
 
-      <PaperCard className="continuity-card" id="activity">
+      <PaperCard className="continuity-card paper-card--tactile" id="activity">
         <div className="surface-header"><div><h2>Continuity Operations</h2><span className="surface-count">04</span></div><StatusBadge status={operationalStatus} /></div>
         <div className="continuity-card__timeline" aria-label="Continuity state progression"><span className={indicatorMode === MODE_ACTIVE ? "continuity-card__timeline-node continuity-card__timeline-node--current" : "continuity-card__timeline-node"}>Active</span><span className="continuity-card__timeline-rule" aria-hidden="true" /><span className={indicatorMode === MODE_CAUTION ? "continuity-card__timeline-node continuity-card__timeline-node--current" : "continuity-card__timeline-node"}>Caution</span><span className="continuity-card__timeline-rule" aria-hidden="true" /><span className={indicatorMode === MODE_CONTINUITY ? "continuity-card__timeline-node continuity-card__timeline-node--current" : "continuity-card__timeline-node"}>Continuity</span></div>
+        <div className={`heartbeat-indicator heartbeat-indicator--${heartbeatState}`} role="status" aria-label={`Heartbeat activity: ${heartbeatLabel}`}>
+          <span className="heartbeat-indicator__mark" aria-hidden="true" />
+          <span className="heartbeat-indicator__copy"><TrackedLabel>Heartbeat activity</TrackedLabel><strong>{heartbeatLabel}</strong></span>
+        </div>
         <div className="continuity-card__state"><strong>{continuityLabel}</strong><p>{indicatorMode === MODE_CONTINUITY ? recoveryRequested ? "Recovery is pending. Discretionary authority remains suspended; protected operations remain executable." : "Discretionary authority is suspended. Protected operations remain executable." : indicatorMode === MODE_CAUTION ? "The heartbeat is overdue. Continuity has not been activated, and Check In can restore Active." : activeWindowElapsed ? "Active window elapsed. Awaiting refreshed onchain state." : "The controller heartbeat keeps the vault operational."}</p></div>
         <div className="continuity-card__countdown"><TrackedLabel>{countdownLabel}</TrackedLabel><strong>{countdownValue}</strong></div>
         <div className="continuity-card__metrics">
@@ -300,21 +383,48 @@ export function Phase12Dashboard() {
       </PaperCard>
 
       <section className="operational-grid" aria-label="Treasury overview">
-        <BalanceCard title="Treasury Balance" value={vault.vaultBalance} decimals={decimals} detail={readState} className="operational-card--balance" />
-        <PaperCard className="operational-card"><div className="operational-card__header"><h2>Protection Coverage</h2><span className="card-menu">USDG</span></div><div className="live-value"><p>{displayUsd(vault.protectedBalance, decimals)}</p><small>Protected balance</small></div><Divider /><div className="card-footnote"><span>Available</span><strong>{displayUsd(vault.availableBalance, decimals)}</strong></div><div className="card-footnote"><span>Funded</span><strong>{typeof vault.isFunded === "boolean" ? vault.isFunded ? "Yes" : "No" : "—"}</strong></div></PaperCard>
-        <PaperCard className="operational-card operational-card--controller"><div className="operational-card__header"><h2>Controller Status</h2><TrackedLabel>Identity / authority</TrackedLabel></div><div className="controller-state"><strong>{controllerLabel}</strong></div><Divider /><div className="controller-meta"><span>Operational mode</span><StatusBadge status={operationalStatus} /></div><div className="controller-meta"><span>Owner</span><strong className="mono-value">{typeof vault.owner === "string" ? vault.owner : "—"}</strong></div></PaperCard>
+        <BalanceCard title="Treasury Balance" value={vault.vaultBalance} decimals={decimals} detail={readState} className="operational-card--balance paper-card--tactile paper-card--tactile-quiet" />
+        <PaperCard className="operational-card paper-card--tactile paper-card--tactile-quiet"><div className="operational-card__header"><h2>Protection Coverage</h2><span className="card-menu">USDG</span></div><div className="live-value"><p>{displayUsd(vault.protectedBalance, decimals)}</p><small>Protected balance</small></div><Divider /><div className="card-footnote"><span>Available</span><strong>{displayUsd(vault.availableBalance, decimals)}</strong></div><div className="card-footnote"><span>Funded</span><strong>{typeof vault.isFunded === "boolean" ? vault.isFunded ? "Yes" : "No" : "—"}</strong></div></PaperCard>
+        <PaperCard className="operational-card operational-card--controller paper-card--tactile paper-card--tactile-quiet"><div className="operational-card__header"><h2>Controller Status</h2><TrackedLabel>Identity / authority</TrackedLabel></div><div className="controller-state"><strong>{controllerLabel}</strong></div><Divider /><div className="controller-meta"><span>Operational mode</span><StatusBadge status={operationalStatus} /></div><div className="controller-meta"><span>Owner</span><strong className="mono-value">{typeof vault.owner === "string" ? vault.owner : "—"}</strong></div></PaperCard>
       </section>
       {vault.isError ? <p className="read-error" role="alert">Vault reads unavailable: {errorText(vault.error)}</p> : null}
 
       <section className="phase12-operations" aria-label="Treasury operations">
-        <PaperCard id="deposit" className="operation-card"><div className="surface-header"><div><h2>Deposit USDG</h2><span className="surface-count">01</span></div><TrackedLabel>Exact amount</TrackedLabel></div><p className="operation-copy">Approve only the requested amount, then explicitly submit the deposit. Approval never submits a deposit automatically.</p><div className="wallet-balance-line"><span>Connected wallet</span><strong>{displayUsd(token.balance, decimals)}</strong></div><div className="form-row"><label>Amount<input inputMode="decimal" value={depositAmount} onChange={(event) => setDepositAmount(event.target.value)} placeholder={decimals === undefined ? "Reading decimals…" : "0.00"} /></label></div><div className="form-actions">{depositNeedsApproval ? <Button variant="solid" disabled={transactionPending || !connected || !correctNetwork} onClick={submitDepositApproval}>{approvalTx.isBusy ? approvalTx.isConfirming ? "Confirming…" : "Approving…" : "Approve USDG"}</Button> : <Button variant="solid" disabled={!depositReady} onClick={submitDeposit}>{vaultTx.isBusy ? vaultTx.isConfirming ? "Confirming…" : "Depositing…" : "Deposit USDG"}</Button>}</div>{approvalTx.isConfirmed ? <p className="transaction-note">Approval confirmed. Deposit remains a separate action.</p> : null}<TransactionNote label="Approval" phase={approvalTx.phase} error={approvalTx.errorMessage} /><TransactionNote label="Deposit" phase={vaultTx.phase} error={vaultTx.errorMessage} /></PaperCard>
-        <PaperCard id="withdraw" className="operation-card"><div className="surface-header"><div><h2>Withdraw Available</h2><span className="surface-count">02</span></div><TrackedLabel>Controller · Active</TrackedLabel></div><p className="operation-copy">Withdraws only unprotected capital. Protected balance is never discretionary withdrawal capacity.</p><div className="wallet-balance-line"><span>Available capital</span><strong>{displayUsd(vault.availableBalance, decimals)}</strong></div><div className="form-row"><label>Recipient<input value={withdrawRecipient} onChange={(event) => setWithdrawRecipient(event.target.value)} placeholder="0x…" /></label><label>Amount<input inputMode="decimal" value={withdrawAmount} onChange={(event) => setWithdrawAmount(event.target.value)} placeholder="0.00" /></label></div><div className="form-actions"><Button variant="solid" disabled={!controllerActive || transactionPending} onClick={submitWithdraw}>{vaultTx.isBusy ? vaultTx.isConfirming ? "Confirming…" : "Withdrawing…" : "Withdraw available"}</Button></div></PaperCard>
-        <PaperCard id="create" className="operation-card operation-card--wide"><div className="surface-header"><div><h2>Create Commitment</h2><span className="surface-count">03</span></div><TrackedLabel>Controller · Active</TrackedLabel></div><p className="operation-copy">Commit a stored recipient and amount against currently available treasury capital. The vault remains authoritative.</p><div className="form-row form-row--four"><label>Recipient<input value={createRecipient} onChange={(event) => setCreateRecipient(event.target.value)} placeholder="0x…" /></label><label>Amount<input inputMode="decimal" value={createAmount} onChange={(event) => setCreateAmount(event.target.value)} placeholder="0.00" /></label><label>Type<select value={commitmentType} onChange={(event) => setCommitmentType(event.target.value as "one-time" | "recurring")}><option value="one-time">One-time</option><option value="recurring">Recurring</option></select></label><label>{commitmentType === "recurring" ? "Interval (seconds)" : "Interval"}<input disabled={commitmentType === "one-time"} inputMode="numeric" value={commitmentType === "one-time" ? "0" : interval} onChange={(event) => setInterval(event.target.value)} placeholder="0" /></label></div><div className="form-row"><label>First due<input type="datetime-local" value={firstDue} onChange={(event) => setFirstDue(event.target.value)} /></label></div><div className="form-actions"><Button variant="solid" disabled={!controllerActive || transactionPending} onClick={submitCreate}>{vaultTx.isBusy ? vaultTx.isConfirming ? "Confirming…" : "Creating…" : "Create commitment"}</Button></div></PaperCard>
+        <PaperCard id="deposit" className="operation-card paper-card--tactile"><div className="surface-header"><div><h2>Deposit USDG</h2><span className="surface-count">01</span></div><TrackedLabel>Exact approval</TrackedLabel></div><div className="paper-card__summary"><div><TrackedLabel>Connected wallet USDG</TrackedLabel><strong>{displayUsd(token.balance, decimals)}</strong></div><div><TrackedLabel>Current allowance</TrackedLabel><strong>{displayUsd(token.allowance, decimals)}</strong></div></div><p className="operation-copy">Approve only the requested amount, then explicitly submit the deposit. Approval never submits a deposit automatically.</p><div className="form-actions"><Button variant="solid" onClick={(event) => openModal("deposit", event.currentTarget)}>Deposit USDG</Button></div></PaperCard>
+        <PaperCard id="withdraw" className="operation-card paper-card--tactile"><div className="surface-header"><div><h2>Withdraw Available</h2><span className="surface-count">02</span></div><ControllerModeLabel status={operationalStatus} /></div><div className="paper-card__summary"><div><TrackedLabel>Available capital</TrackedLabel><strong>{displayUsd(vault.availableBalance, decimals)}</strong></div><div><TrackedLabel>Identity / role</TrackedLabel><strong>{controllerLabel}</strong></div><div><TrackedLabel>Operational mode</TrackedLabel><StatusBadge status={operationalStatus} /></div></div><p className="operation-copy">Only unprotected available capital can be withdrawn. Protected balance cannot be withdrawn.</p><div className="form-actions"><Button variant="solid" onClick={(event) => openModal("withdraw", event.currentTarget)}>Withdraw Available</Button></div></PaperCard>
+        <PaperCard id="create" className="operation-card operation-card--wide paper-card--tactile"><div className="surface-header"><div><h2>Create Commitment</h2><span className="surface-count">03</span></div><ControllerModeLabel status={operationalStatus} /></div><p className="operation-copy">Commit a stored recipient and amount against currently available treasury capital. The vault remains authoritative.</p><div className="form-row form-row--four"><label>Recipient<input value={createRecipient} onChange={(event) => setCreateRecipient(event.target.value)} placeholder="0x…" /></label><label>Amount<input inputMode="decimal" value={createAmount} onChange={(event) => setCreateAmount(event.target.value)} placeholder="0.00" /></label><label>Type<select value={commitmentType} onChange={(event) => setCommitmentType(event.target.value as "one-time" | "recurring")}><option value="one-time">One-time</option><option value="recurring">Recurring</option></select></label><label>{commitmentType === "recurring" ? "Interval (seconds)" : "Interval"}<input disabled={commitmentType === "one-time"} inputMode="numeric" value={commitmentType === "one-time" ? "0" : interval} onChange={(event) => setInterval(event.target.value)} placeholder="0" /></label></div><div className="form-row"><label>First due<input type="datetime-local" value={firstDue} onChange={(event) => setFirstDue(event.target.value)} /></label></div><div className="form-actions"><Button variant="solid" disabled={!controllerActive || transactionPending} onClick={submitCreate}>{vaultTx.isBusy ? vaultTx.isConfirming ? "Confirming…" : "Creating…" : "Create commitment"}</Button></div></PaperCard>
       </section>
 
-      {formError ? <p className="read-error" role="alert">{formError}</p> : null}
+      {formError && !activeModal ? <p className="read-error" role="alert">{formError}</p> : null}
       <section className="commitments-surface paper-card" id="commitments" aria-label="Protected commitments"><div className="surface-header"><div><h2>Protected Commitments</h2><span className="surface-count">{displayInteger(vault.commitmentCount)}</span></div><TrackedLabel>Onchain state</TrackedLabel></div>{commitments.isPending ? <div className="empty-surface"><TrackedLabel>Reading commitments…</TrackedLabel></div> : commitments.isError ? <div className="empty-surface"><TrackedLabel>Commitments unavailable</TrackedLabel><p>{errorText(commitments.error)}</p></div> : commitments.tooMany ? <div className="empty-surface"><TrackedLabel>Commitment list exceeds display limit</TrackedLabel><p>The onchain count is {displayInteger(vault.commitmentCount)}. No partial list is shown.</p></div> : commitments.commitments.length === 0 ? <div className="empty-surface"><TrackedLabel>No commitments available</TrackedLabel><p>Zero commitments is a valid vault state.</p></div> : <div className="commitment-list">{commitments.commitments.map((commitment) => <CommitmentRow key={commitment.id.toString()} commitment={commitment} decimals={decimals} currentTime={currentTime} canCancel={Boolean(controllerActive)} canExecute={Boolean(connected && correctNetwork)} pending={vaultTx.isBusy} onCancel={cancel} onExecute={execute} />)}</div>}</section>
       <section className="application-state-strip" aria-label="Connected wallet balance"><div><TrackedLabel>Connected wallet USDG</TrackedLabel><strong>{displayUsd(token.balance, decimals)}</strong></div><div><TrackedLabel>Vault funding</TrackedLabel><strong>{typeof vault.isFunded === "boolean" ? vault.isFunded ? "Funded" : "Not funded" : "Reading…"}</strong></div><div><TrackedLabel>Execution</TrackedLabel><strong>{connected && correctNetwork ? "Wallet ready" : "Connect on Arbitrum Sepolia"}</strong></div></section>
+
+      {activeModal ? (
+        <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !transactionPending) closeModal(); }}>
+          <section ref={modalRef} className="paper-modal" role="dialog" aria-modal="true" aria-labelledby={`${activeModal}-modal-title`} onMouseDown={(event) => event.stopPropagation()}>
+            {activeModal === "deposit" ? (
+              <>
+                <div className="paper-modal__header"><div><TrackedLabel>Operation 01</TrackedLabel><h2 id="deposit-modal-title">Deposit USDG</h2></div><button className="paper-modal__close" type="button" data-modal-focusable aria-label="Close Deposit USDG" disabled={transactionPending} onClick={closeModal}>×</button></div>
+                <div className="paper-card__summary"><div><TrackedLabel>Connected wallet USDG</TrackedLabel><strong>{displayUsd(token.balance, decimals)}</strong></div><div><TrackedLabel>Current allowance</TrackedLabel><strong>{displayUsd(token.allowance, decimals)}</strong></div></div>
+                <p className="operation-copy">Approve only the exact requested amount. Approval never submits a deposit automatically; the final deposit remains an explicit separate action.</p>
+                <div className="form-row"><label>Amount<input data-modal-focusable inputMode="decimal" value={depositAmount} onChange={(event) => setDepositAmount(event.target.value)} placeholder={decimals === undefined ? "Reading decimals…" : "0.00"} /></label></div>
+                <div className="form-actions">{depositNeedsApproval ? <Button variant="solid" data-modal-focusable disabled={transactionPending || !connected || !correctNetwork} onClick={submitDepositApproval}>{approvalTx.isBusy ? approvalTx.isConfirming ? "Confirming…" : "Approving…" : "Approve USDG"}</Button> : <Button variant="solid" data-modal-focusable disabled={!depositReady} onClick={submitDeposit}>{vaultTx.isBusy ? vaultTx.isConfirming ? "Confirming…" : "Depositing…" : "Deposit USDG"}</Button>}</div>
+                {formError ? <p className="read-error" role="alert">{formError}</p> : null}
+                {approvalTx.isConfirmed ? <p className="transaction-note">Approval confirmed. Deposit remains a separate action.</p> : null}<TransactionNote label="Approval" phase={approvalTx.phase} error={approvalTx.errorMessage} /><TransactionNote label="Deposit" phase={vaultTx.phase} error={vaultTx.errorMessage} />
+              </>
+            ) : (
+              <>
+                <div className="paper-modal__header"><div><TrackedLabel>Operation 02</TrackedLabel><h2 id="withdraw-modal-title">Withdraw Available</h2></div><button className="paper-modal__close" type="button" data-modal-focusable aria-label="Close Withdraw Available" disabled={transactionPending} onClick={closeModal}>×</button></div>
+                <div className="paper-card__summary"><div><TrackedLabel>Available capital</TrackedLabel><strong>{displayUsd(vault.availableBalance, decimals)}</strong></div><div><TrackedLabel>Identity / role</TrackedLabel><strong>{controllerLabel}</strong></div><div><TrackedLabel>Operational mode</TrackedLabel><StatusBadge status={operationalStatus} /></div></div>
+                <p className="operation-copy">Only unprotected available capital can be withdrawn. Protected balance cannot be withdrawn.</p>
+                <div className="form-row"><label>Recipient<input data-modal-focusable value={withdrawRecipient} onChange={(event) => setWithdrawRecipient(event.target.value)} placeholder="0x…" /></label><label>Amount<input data-modal-focusable inputMode="decimal" value={withdrawAmount} onChange={(event) => setWithdrawAmount(event.target.value)} placeholder="0.00" /></label></div>
+                <div className="form-actions"><Button variant="solid" data-modal-focusable disabled={!controllerActive || transactionPending} onClick={submitWithdraw}>{vaultTx.isBusy ? vaultTx.isConfirming ? "Confirming…" : "Withdrawing…" : "Withdraw Available"}</Button></div>
+                {formError ? <p className="read-error" role="alert">{formError}</p> : null}<TransactionNote label="Withdrawal" phase={vaultTx.phase} error={vaultTx.errorMessage} />
+              </>
+            )}
+          </section>
+        </div>
+      ) : null}
     </div>
   );
 }
