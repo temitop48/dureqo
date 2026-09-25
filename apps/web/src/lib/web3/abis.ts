@@ -4,6 +4,7 @@ import type { Abi } from "viem";
 // The deployed contract remains the source of financial truth.
 export const continuityVaultAbi = [
   { type: "function", name: "activateContinuity", inputs: [], outputs: [], stateMutability: "nonpayable" },
+  { type: "function", name: "activeUntil", inputs: [], outputs: [{ name: "", type: "uint256" }], stateMutability: "view" },
   { type: "function", name: "availableBalance", inputs: [], outputs: [{ name: "", type: "uint256" }], stateMutability: "view" },
   { type: "function", name: "cancelCommitment", inputs: [{ name: "id", type: "uint256" }], outputs: [], stateMutability: "nonpayable" },
   { type: "function", name: "cancelRecovery", inputs: [], outputs: [], stateMutability: "nonpayable" },

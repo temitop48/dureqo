@@ -26,7 +26,9 @@ function displayInteger(value: unknown) {
 function displayDate(value: bigint) {
   const maxSeconds = BigInt(Math.floor(Number.MAX_SAFE_INTEGER / 1000));
   if (value > maxSeconds) return `Unix ${value.toString()}`;
-  return new Date(Number(value) * 1000).toLocaleString();
+  const date = new Date(Number(value) * 1000);
+  const pad = (part: number) => part.toString().padStart(2, "0");
+  return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())} UTC`;
 }
 
 function modeName(mode: number | undefined) {
@@ -34,6 +36,21 @@ function modeName(mode: number | undefined) {
   if (mode === MODE_CAUTION) return "Caution";
   if (mode === MODE_CONTINUITY) return "Continuity";
   return "Reading…";
+}
+
+function formatDuration(seconds: bigint | undefined) {
+  if (seconds === undefined) return "—";
+  const days = seconds / BigInt(86400);
+  const hours = (seconds % BigInt(86400)) / BigInt(3600);
+  const minutes = (seconds % BigInt(3600)) / BigInt(60);
+  const remainder = seconds % BigInt(60);
+  const parts = [
+    days > BigInt(0) ? `${days}d` : "",
+    hours > BigInt(0) ? `${hours}h` : "",
+    minutes > BigInt(0) ? `${minutes}m` : "",
+    remainder > BigInt(0) || seconds === BigInt(0) ? `${remainder}s` : "",
+  ].filter(Boolean);
+  return parts.join(" ");
 }
 
 function isSameAddress(left: Address | undefined, right: unknown) {
@@ -77,8 +94,8 @@ function BalanceCard({ title, value, decimals, detail, className = "" }: { title
   );
 }
 
-function CommitmentRow({ commitment, decimals, currentTime, canCancel, canExecute, pending, onCancel, onExecute }: { commitment: { id: bigint } & Commitment; decimals: number | undefined; currentTime: bigint; canCancel: boolean; canExecute: boolean; pending: boolean; onCancel: (id: bigint) => void; onExecute: (id: bigint) => void }) {
-  const due = commitment.active && currentTime >= commitment.nextDue;
+function CommitmentRow({ commitment, decimals, currentTime, canCancel, canExecute, pending, onCancel, onExecute }: { commitment: { id: bigint } & Commitment; decimals: number | undefined; currentTime: bigint | null; canCancel: boolean; canExecute: boolean; pending: boolean; onCancel: (id: bigint) => void; onExecute: (id: bigint) => void }) {
+  const due = currentTime !== null && commitment.active && currentTime >= commitment.nextDue;
   return (
     <div className="commitment-row">
       <div className="commitment-row__id"><TrackedLabel>ID</TrackedLabel><strong>{commitment.id.toString()}</strong></div>
@@ -109,19 +126,32 @@ export function Phase12Dashboard() {
   const [withdrawAmount, setWithdrawAmount] = useState("");
   const [formError, setFormError] = useState<string | null>(null);
   const lastConfirmedHash = useRef<string | undefined>(undefined);
-  const [currentTime, setCurrentTime] = useState(() => BigInt(Math.floor(Date.now() / 1000)));
+  const [currentTime, setCurrentTime] = useState<bigint | null>(null);
   const decimals = typeof vault.decimals === "number" ? vault.decimals : undefined;
   const connected = wallet.isConnected;
   const correctNetwork = connected && wallet.chainId === ARBITRUM_SEPOLIA_CHAIN_ID;
-  const active = vault.mode === MODE_ACTIVE;
+  const operationalMode = typeof vault.mode === "number" ? vault.mode : undefined;
+  const indicatorMode = operationalMode;
+  const active = operationalMode === MODE_ACTIVE;
+  const caution = operationalMode === MODE_CAUTION;
+  const continuity = operationalMode === MODE_CONTINUITY;
   const controller = correctNetwork && isSameAddress(wallet.address, vault.owner);
   const controllerActive = controller && active;
+  const controllerContinuity = controller && continuity;
+  const recoveryRequested = typeof vault.recoveryRequestedAt === "bigint" && vault.recoveryRequestedAt > BigInt(0);
+  const recoveryReadyAt = recoveryRequested && typeof vault.recoveryDelay === "bigint"
+    ? vault.recoveryRequestedAt! + vault.recoveryDelay
+    : undefined;
+  const recoveryReady = recoveryReadyAt !== undefined && currentTime !== null && currentTime >= recoveryReadyAt;
+  const activeWindowElapsed = currentTime !== null && typeof vault.activeUntil === "bigint" && currentTime > vault.activeUntil;
+  const activeUntilRemaining = currentTime !== null && typeof vault.activeUntil === "bigint" && currentTime <= vault.activeUntil ? vault.activeUntil - currentTime : undefined;
+  const eligibilityRemaining = currentTime !== null && typeof vault.continuityEligibleAt === "bigint" && currentTime < vault.continuityEligibleAt ? vault.continuityEligibleAt - currentTime : undefined;
   const transactionPending = vaultTx.isBusy || approvalTx.isBusy;
 
   useEffect(() => {
     const clock = window.setInterval(() => {
       setCurrentTime(BigInt(Math.floor(Date.now() / 1000)));
-    }, 15_000);
+    }, 1_000);
     return () => window.clearInterval(clock);
   }, []);
 
@@ -198,9 +228,39 @@ export function Phase12Dashboard() {
     vaultTx.writeVault({ functionName: "withdrawAvailable", args: [recipient, amount] });
   });
 
+  const checkIn = () => runFormAction(() => {
+    if (!controller || (!active && !caution)) throw new Error("Check In requires the controller while the vault is Active or Caution.");
+    vaultTx.writeVault({ functionName: "checkIn", args: [] });
+  });
+
+  const activate = () => runFormAction(() => {
+    if (!connected || !correctNetwork) throw new Error("Connect a wallet on Arbitrum Sepolia to activate Continuity.");
+    if (continuity) throw new Error("Continuity is already active.");
+    if (currentTime === null || typeof vault.continuityEligibleAt !== "bigint" || currentTime < vault.continuityEligibleAt) throw new Error("Continuity is not yet eligible.");
+    vaultTx.writeVault({ functionName: "activateContinuity", args: [] });
+  });
+
+  const requestRecovery = () => runFormAction(() => {
+    if (!controllerContinuity) throw new Error("Only the controller in Continuity can request recovery.");
+    vaultTx.writeVault({ functionName: "requestRecovery", args: [] });
+  });
+
+  const cancelRecovery = () => runFormAction(() => {
+    if (!controllerContinuity || !recoveryRequested) throw new Error("Only the controller can cancel an active recovery request.");
+    vaultTx.writeVault({ functionName: "cancelRecovery", args: [] });
+  });
+
+  const completeRecovery = () => runFormAction(() => {
+    if (!controllerContinuity || !recoveryReady) throw new Error("Recovery delay has not elapsed.");
+    vaultTx.writeVault({ functionName: "completeRecovery", args: [] });
+  });
+
   const readState = vault.isPending ? "Reading…" : vault.isError ? "Read unavailable" : "Vault read OK";
   const controllerLabel = !connected ? "Not connected" : !correctNetwork ? "Wrong network" : vault.isPending ? "Reading…" : controller ? "Controller" : "Connected / Not controller";
-  const controllerStatus: "active" | "caution" | "neutral" = !connected || !correctNetwork ? "neutral" : controller ? "active" : "caution";
+  const continuityLabel = indicatorMode === undefined ? "Reading…" : recoveryRequested ? "Recovery pending" : modeName(indicatorMode);
+  const countdownLabel = indicatorMode === MODE_ACTIVE ? "Active window" : indicatorMode === MODE_CAUTION && currentTime === null ? "Timing" : indicatorMode === MODE_CAUTION && eligibilityRemaining !== undefined ? "Time until eligible" : indicatorMode === MODE_CAUTION ? "Activation" : recoveryRequested && currentTime === null ? "Timing" : recoveryRequested && !recoveryReady ? "Recovery delay" : recoveryRequested ? "Recovery" : "Continuity";
+  const countdownValue = indicatorMode === MODE_ACTIVE ? currentTime === null ? "Awaiting local clock" : activeWindowElapsed ? "Elapsed; awaiting refresh" : formatDuration(activeUntilRemaining) : indicatorMode === MODE_CAUTION && currentTime === null ? "Awaiting local clock" : indicatorMode === MODE_CAUTION && eligibilityRemaining !== undefined ? formatDuration(eligibilityRemaining) : indicatorMode === MODE_CAUTION ? "Continuity eligible" : recoveryRequested && currentTime === null ? "Awaiting local clock" : recoveryRequested && !recoveryReady && recoveryReadyAt !== undefined ? formatDuration(recoveryReadyAt - currentTime!) : recoveryRequested ? "Recovery ready" : "Active";
+  const operationalStatus: "active" | "caution" | "continuity" | "neutral" = operationalMode === MODE_ACTIVE ? "active" : operationalMode === MODE_CAUTION ? "caution" : operationalMode === MODE_CONTINUITY ? "continuity" : "neutral";
 
   return (
     <div className="application-container" id="overview">
@@ -210,10 +270,39 @@ export function Phase12Dashboard() {
         <div className="application-hero__note"><TrackedLabel>Contract state.</TrackedLabel><TrackedLabel>Wallet authority.</TrackedLabel><Divider /><p>Every balance and operation below is read from the deployed vault and USDG contracts.</p></div>
       </section>
 
+      <PaperCard className="continuity-card" id="activity">
+        <div className="surface-header"><div><h2>Continuity Operations</h2><span className="surface-count">04</span></div><StatusBadge status={operationalStatus} /></div>
+        <div className="continuity-card__timeline" aria-label="Continuity state progression"><span className={indicatorMode === MODE_ACTIVE ? "continuity-card__timeline-node continuity-card__timeline-node--current" : "continuity-card__timeline-node"}>Active</span><span className="continuity-card__timeline-rule" aria-hidden="true" /><span className={indicatorMode === MODE_CAUTION ? "continuity-card__timeline-node continuity-card__timeline-node--current" : "continuity-card__timeline-node"}>Caution</span><span className="continuity-card__timeline-rule" aria-hidden="true" /><span className={indicatorMode === MODE_CONTINUITY ? "continuity-card__timeline-node continuity-card__timeline-node--current" : "continuity-card__timeline-node"}>Continuity</span></div>
+        <div className="continuity-card__state"><strong>{continuityLabel}</strong><p>{indicatorMode === MODE_CONTINUITY ? recoveryRequested ? "Recovery is pending. Discretionary authority remains suspended; protected operations remain executable." : "Discretionary authority is suspended. Protected operations remain executable." : indicatorMode === MODE_CAUTION ? "The heartbeat is overdue. Continuity has not been activated, and Check In can restore Active." : activeWindowElapsed ? "Active window elapsed. Awaiting refreshed onchain state." : "The controller heartbeat keeps the vault operational."}</p></div>
+        <div className="continuity-card__countdown"><TrackedLabel>{countdownLabel}</TrackedLabel><strong>{countdownValue}</strong></div>
+        <div className="continuity-card__metrics">
+          <div><TrackedLabel>Last heartbeat</TrackedLabel><span>{typeof vault.lastHeartbeat === "bigint" ? displayDate(vault.lastHeartbeat) : "—"}</span></div>
+          <div><TrackedLabel>Active until</TrackedLabel><span>{typeof vault.activeUntil === "bigint" ? displayDate(vault.activeUntil) : "—"}</span></div>
+          <div><TrackedLabel>Continuity eligible</TrackedLabel><span>{typeof vault.continuityEligibleAt === "bigint" ? displayDate(vault.continuityEligibleAt) : "—"}</span></div>
+          <div><TrackedLabel>Recovery ready</TrackedLabel><span>{recoveryReadyAt === undefined ? "—" : displayDate(recoveryReadyAt)}</span></div>
+        </div>
+        <div className="continuity-card__metrics">
+          <div><TrackedLabel>Heartbeat interval</TrackedLabel><span>{formatDuration(vault.heartbeatInterval)}</span></div>
+          <div><TrackedLabel>Grace period</TrackedLabel><span>{formatDuration(vault.gracePeriod)}</span></div>
+          <div><TrackedLabel>Recovery delay</TrackedLabel><span>{formatDuration(vault.recoveryDelay)}</span></div>
+          <div><TrackedLabel>Current time</TrackedLabel><span>{currentTime === null ? "—" : displayDate(currentTime)}</span></div>
+        </div>
+        <div className="form-actions">
+          {controller && (active || caution) ? <Button variant="solid" disabled={transactionPending} onClick={checkIn}>{vaultTx.isBusy ? "Pending…" : "Check In"}</Button> : null}
+          {vault.continuityActivated === false ? <Button variant="quiet" disabled={transactionPending || currentTime === null || !connected || !correctNetwork || typeof vault.continuityEligibleAt !== "bigint" || currentTime < vault.continuityEligibleAt} onClick={activate}>{vaultTx.isBusy ? "Pending…" : "Activate Continuity"}</Button> : null}
+          {controllerContinuity && !recoveryRequested ? <Button variant="quiet" disabled={transactionPending} onClick={requestRecovery}>{vaultTx.isBusy ? "Pending…" : "Request recovery"}</Button> : null}
+          {controllerContinuity && recoveryRequested ? <Button variant="quiet" disabled={transactionPending} onClick={cancelRecovery}>{vaultTx.isBusy ? "Pending…" : "Cancel recovery"}</Button> : null}
+          {controllerContinuity && recoveryRequested && recoveryReady ? <Button variant="solid" disabled={transactionPending} onClick={completeRecovery}>{vaultTx.isBusy ? "Pending…" : "Complete recovery"}</Button> : null}
+        </div>
+        {vault.continuityActivated === false ? <p className="operation-copy">Once eligible, Continuity may be activated by any connected account. Activation only triggers the already-authorized state; it grants no ownership, custody, or withdrawal authority.</p> : null}
+        {recoveryRequested && !recoveryReady ? <p className="operation-copy">Recovery waiting: {currentTime === null ? "awaiting local clock" : recoveryReadyAt === undefined ? "reading delay" : `${formatDuration(recoveryReadyAt - currentTime)} remaining`}. The controller may cancel the request.</p> : null}
+        <TransactionNote label="Continuity" phase={vaultTx.phase} error={vaultTx.errorMessage} />
+      </PaperCard>
+
       <section className="operational-grid" aria-label="Treasury overview">
         <BalanceCard title="Treasury Balance" value={vault.vaultBalance} decimals={decimals} detail={readState} className="operational-card--balance" />
         <PaperCard className="operational-card"><div className="operational-card__header"><h2>Protection Coverage</h2><span className="card-menu">USDG</span></div><div className="live-value"><p>{displayUsd(vault.protectedBalance, decimals)}</p><small>Protected balance</small></div><Divider /><div className="card-footnote"><span>Available</span><strong>{displayUsd(vault.availableBalance, decimals)}</strong></div><div className="card-footnote"><span>Funded</span><strong>{typeof vault.isFunded === "boolean" ? vault.isFunded ? "Yes" : "No" : "—"}</strong></div></PaperCard>
-        <PaperCard className="operational-card operational-card--controller"><div className="operational-card__header"><h2>Controller Status</h2><StatusBadge status={controllerStatus} /></div><div className="controller-state"><strong>{controllerLabel}</strong></div><Divider /><div className="controller-meta"><span>Mode</span><strong>{modeName(vault.mode)}</strong></div><div className="controller-meta"><span>Owner</span><strong className="mono-value">{typeof vault.owner === "string" ? vault.owner : "—"}</strong></div></PaperCard>
+        <PaperCard className="operational-card operational-card--controller"><div className="operational-card__header"><h2>Controller Status</h2><TrackedLabel>Identity / authority</TrackedLabel></div><div className="controller-state"><strong>{controllerLabel}</strong></div><Divider /><div className="controller-meta"><span>Operational mode</span><StatusBadge status={operationalStatus} /></div><div className="controller-meta"><span>Owner</span><strong className="mono-value">{typeof vault.owner === "string" ? vault.owner : "—"}</strong></div></PaperCard>
       </section>
       {vault.isError ? <p className="read-error" role="alert">Vault reads unavailable: {errorText(vault.error)}</p> : null}
 

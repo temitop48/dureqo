@@ -318,6 +318,19 @@ button:focus-visible, a:focus-visible {
 .phase12-operations { display: grid; gap: 1.15rem; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 1.15rem; }
 .operation-card { min-height: 20rem; padding: 1.5rem 1.75rem; }
 .operation-card--wide { grid-column: 1 / -1; }
+.continuity-card { margin-top: 1.15rem; padding: 1.5rem 1.75rem; }
+.continuity-card__state { display: flex; align-items: baseline; gap: 1rem; margin: 1.2rem 0; }
+.continuity-card__state strong { font-family: var(--font-serif); font-size: clamp(1.5rem, 2.8vw, 2.35rem); font-weight: 400; }
+.continuity-card__state p { color: var(--ink-soft); font-size: 0.78rem; line-height: 1.5; max-width: 38rem; }
+.continuity-card__timeline { align-items: center; display: flex; gap: 0.75rem; margin: 1.5rem 0 0.5rem; }
+.continuity-card__timeline-node { color: var(--ink-soft); font-size: 0.7rem; letter-spacing: 0.12em; text-transform: uppercase; white-space: nowrap; }
+.continuity-card__timeline-node--current { color: var(--ink); font-weight: 600; }
+.continuity-card__timeline-rule { background: var(--border-strong); flex: 1; height: 1px; }
+.continuity-card__countdown { align-items: baseline; border-top: 1px solid var(--border); display: flex; gap: 1rem; justify-content: space-between; padding: 0.9rem 0; }
+.continuity-card__countdown strong { color: var(--ink-soft); font-size: 0.8rem; font-weight: 500; }
+.continuity-card__metrics { border-top: 1px solid var(--border); display: grid; gap: 1rem; grid-template-columns: repeat(4, minmax(0, 1fr)); padding: 0.9rem 0; }
+.continuity-card__metrics > div { display: flex; flex-direction: column; gap: 0.35rem; }
+.continuity-card__metrics > div > span:not(.tracked-label) { color: var(--ink-soft); font-size: 0.78rem; }
 .operation-copy { margin: 1.1rem 0; max-width: 44rem; }
 .wallet-balance-line { align-items: center; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; margin-bottom: 1rem; padding-bottom: 0.8rem; }
 .wallet-balance-line strong { color: var(--ink); font-weight: 500; }
@@ -374,6 +387,7 @@ button:focus-visible, a:focus-visible {
   .quick-actions-grid { grid-template-columns: 1fr 1fr; }
   .phase12-operations { display: block; }
   .operation-card { margin-bottom: 1rem; min-height: 0; }
+  .continuity-card__metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .form-row, .form-row--four, .application-state-strip { grid-template-columns: 1fr; }
   .commitment-row { align-items: start; grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .commitment-row__actions { align-items: flex-start; }

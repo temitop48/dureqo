@@ -38,6 +38,14 @@ export function useVaultReads() {
         { address: publicWeb3Config.vaultAddress, abi: continuityVaultAbi, functionName: "mode" },
         { address: publicWeb3Config.vaultAddress, abi: continuityVaultAbi, functionName: "commitmentCount" },
         { address: publicWeb3Config.usdgAddress, abi: usdgAbi, functionName: "decimals" },
+        { address: publicWeb3Config.vaultAddress, abi: continuityVaultAbi, functionName: "lastHeartbeat" },
+        { address: publicWeb3Config.vaultAddress, abi: continuityVaultAbi, functionName: "heartbeatInterval" },
+        { address: publicWeb3Config.vaultAddress, abi: continuityVaultAbi, functionName: "gracePeriod" },
+        { address: publicWeb3Config.vaultAddress, abi: continuityVaultAbi, functionName: "activeUntil" },
+        { address: publicWeb3Config.vaultAddress, abi: continuityVaultAbi, functionName: "continuityEligibleAt" },
+        { address: publicWeb3Config.vaultAddress, abi: continuityVaultAbi, functionName: "continuityActivated" },
+        { address: publicWeb3Config.vaultAddress, abi: continuityVaultAbi, functionName: "recoveryDelay" },
+        { address: publicWeb3Config.vaultAddress, abi: continuityVaultAbi, functionName: "recoveryRequestedAt" },
       ] as const,
     [],
   );
@@ -57,6 +65,14 @@ export function useVaultReads() {
     mode: query.data?.[5],
     commitmentCount: query.data?.[6],
     decimals: query.data?.[7],
+    lastHeartbeat: query.data?.[8],
+    heartbeatInterval: query.data?.[9],
+    gracePeriod: query.data?.[10],
+    activeUntil: query.data?.[11],
+    continuityEligibleAt: query.data?.[12],
+    continuityActivated: query.data?.[13],
+    recoveryDelay: query.data?.[14],
+    recoveryRequestedAt: query.data?.[15],
   };
 }
 
