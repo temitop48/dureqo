@@ -1,10 +1,5 @@
-import { AppShell } from "@/components/navigation";
-import { Phase12Dashboard } from "@/components/phase12-dashboard";
+import { LandingPage } from "@/components/landing-page";
 
 export default function Home() {
-  return (
-    <AppShell>
-      <Phase12Dashboard />
-    </AppShell>
-  );
+  return <LandingPage />;
 }

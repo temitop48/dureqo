@@ -13,7 +13,7 @@ export function TopNavigation() {
   return (
     <header className="top-navigation">
       <div className="top-navigation__inner">
-        <Link className="brand-lockup" href="#overview" aria-label="DUREQO overview">
+        <Link className="brand-lockup" href="/" aria-label="DUREQO home">
           <span className="brand-lockup__name">DUREQO</span>
         </Link>
 
