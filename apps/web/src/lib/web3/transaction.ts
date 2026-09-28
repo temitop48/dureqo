@@ -35,7 +35,7 @@ export type VaultWriteRequest = {
   };
 }[SupportedVaultWriteName];
 
-export function useVaultTransaction() {
+export function useVaultTransaction(vaultAddress: `0x${string}` | undefined) {
   const { chainId } = useAccount();
   const write = useWriteContract();
   const receipt = useWaitForTransactionReceipt({
@@ -51,16 +51,17 @@ export function useVaultTransaction() {
       if (chainId !== ARBITRUM_SEPOLIA_CHAIN_ID) {
         throw new Error("Writes are blocked until the wallet is on Arbitrum Sepolia.");
       }
+      if (!vaultAddress) throw new Error("No runtime vault has been discovered.");
 
       write.writeContract({
         abi: continuityVaultAbi,
-        address: publicWeb3Config.vaultAddress,
+        address: vaultAddress,
         args: request.args,
         chainId: ARBITRUM_SEPOLIA_CHAIN_ID,
         functionName: request.functionName,
       });
     },
-    [chainId, isBusy, write],
+    [chainId, isBusy, vaultAddress, write],
   );
 
   let phase: TransactionPhase = "idle";
@@ -83,7 +84,7 @@ export function useVaultTransaction() {
   };
 }
 
-export function useUsdGApproval() {
+export function useUsdGApproval(vaultAddress: `0x${string}` | undefined) {
   const { chainId } = useAccount();
   const write = useWriteContract();
   const receipt = useWaitForTransactionReceipt({
@@ -99,16 +100,17 @@ export function useUsdGApproval() {
       if (chainId !== ARBITRUM_SEPOLIA_CHAIN_ID) {
         throw new Error("Approvals are blocked until the wallet is on Arbitrum Sepolia.");
       }
+      if (!vaultAddress) throw new Error("No runtime vault has been discovered.");
 
       write.writeContract({
         abi: usdgAbi,
         address: publicWeb3Config.usdgAddress,
-        args: [publicWeb3Config.vaultAddress, amount],
+        args: [vaultAddress, amount],
         chainId: ARBITRUM_SEPOLIA_CHAIN_ID,
         functionName: "approve",
       });
     },
-    [chainId, isBusy, write],
+    [chainId, isBusy, vaultAddress, write],
   );
 
   const phase = receipt.isSuccess

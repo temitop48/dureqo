@@ -26,33 +26,36 @@ function isCommitment(value: unknown): value is Commitment {
   );
 }
 
-export function useVaultReads() {
-  const contracts = useMemo(
+export function useVaultReads(vaultAddress: Address | undefined) {
+  const contracts = useMemo<readonly ContractFunctionParameters[]>(
     () =>
-      [
-        { address: publicWeb3Config.usdgAddress, abi: usdgAbi, functionName: "balanceOf", args: [publicWeb3Config.vaultAddress] },
-        { address: publicWeb3Config.vaultAddress, abi: continuityVaultAbi, functionName: "protectedBalance" },
-        { address: publicWeb3Config.vaultAddress, abi: continuityVaultAbi, functionName: "availableBalance" },
-        { address: publicWeb3Config.vaultAddress, abi: continuityVaultAbi, functionName: "isFunded" },
-        { address: publicWeb3Config.vaultAddress, abi: continuityVaultAbi, functionName: "owner" },
-        { address: publicWeb3Config.vaultAddress, abi: continuityVaultAbi, functionName: "mode" },
-        { address: publicWeb3Config.vaultAddress, abi: continuityVaultAbi, functionName: "commitmentCount" },
-        { address: publicWeb3Config.usdgAddress, abi: usdgAbi, functionName: "decimals" },
-        { address: publicWeb3Config.vaultAddress, abi: continuityVaultAbi, functionName: "lastHeartbeat" },
-        { address: publicWeb3Config.vaultAddress, abi: continuityVaultAbi, functionName: "heartbeatInterval" },
-        { address: publicWeb3Config.vaultAddress, abi: continuityVaultAbi, functionName: "gracePeriod" },
-        { address: publicWeb3Config.vaultAddress, abi: continuityVaultAbi, functionName: "activeUntil" },
-        { address: publicWeb3Config.vaultAddress, abi: continuityVaultAbi, functionName: "continuityEligibleAt" },
-        { address: publicWeb3Config.vaultAddress, abi: continuityVaultAbi, functionName: "continuityActivated" },
-        { address: publicWeb3Config.vaultAddress, abi: continuityVaultAbi, functionName: "recoveryDelay" },
-        { address: publicWeb3Config.vaultAddress, abi: continuityVaultAbi, functionName: "recoveryRequestedAt" },
-      ] as const,
-    [],
+      vaultAddress
+        ? [
+            { address: publicWeb3Config.usdgAddress, abi: usdgAbi, functionName: "balanceOf", args: [vaultAddress] },
+            { address: vaultAddress, abi: continuityVaultAbi, functionName: "protectedBalance" },
+            { address: vaultAddress, abi: continuityVaultAbi, functionName: "availableBalance" },
+            { address: vaultAddress, abi: continuityVaultAbi, functionName: "isFunded" },
+            { address: vaultAddress, abi: continuityVaultAbi, functionName: "owner" },
+            { address: vaultAddress, abi: continuityVaultAbi, functionName: "mode" },
+            { address: vaultAddress, abi: continuityVaultAbi, functionName: "commitmentCount" },
+            { address: publicWeb3Config.usdgAddress, abi: usdgAbi, functionName: "decimals" },
+            { address: vaultAddress, abi: continuityVaultAbi, functionName: "lastHeartbeat" },
+            { address: vaultAddress, abi: continuityVaultAbi, functionName: "heartbeatInterval" },
+            { address: vaultAddress, abi: continuityVaultAbi, functionName: "gracePeriod" },
+            { address: vaultAddress, abi: continuityVaultAbi, functionName: "activeUntil" },
+            { address: vaultAddress, abi: continuityVaultAbi, functionName: "continuityEligibleAt" },
+            { address: vaultAddress, abi: continuityVaultAbi, functionName: "continuityActivated" },
+            { address: vaultAddress, abi: continuityVaultAbi, functionName: "recoveryDelay" },
+            { address: vaultAddress, abi: continuityVaultAbi, functionName: "recoveryRequestedAt" },
+          ] as const
+        : [],
+    [vaultAddress],
   );
   const query = useReadContracts({
     allowFailure: false,
     chainId: ARBITRUM_SEPOLIA_CHAIN_ID,
     contracts,
+    query: { enabled: Boolean(vaultAddress) },
   });
 
   return {
@@ -76,19 +79,19 @@ export function useVaultReads() {
   };
 }
 
-export function useConnectedUsdGReads(address: Address | undefined) {
+export function useConnectedUsdGReads(address: Address | undefined, vaultAddress: Address | undefined) {
   const contracts = useMemo<readonly ContractFunctionParameters[]>(() => {
-    if (!address) return [];
+    if (!address || !vaultAddress) return [];
     return [
       { address: publicWeb3Config.usdgAddress, abi: usdgAbi, functionName: "balanceOf", args: [address] },
-      { address: publicWeb3Config.usdgAddress, abi: usdgAbi, functionName: "allowance", args: [address, publicWeb3Config.vaultAddress] },
+      { address: publicWeb3Config.usdgAddress, abi: usdgAbi, functionName: "allowance", args: [address, vaultAddress] },
     ] as const;
-  }, [address]);
+  }, [address, vaultAddress]);
   const query = useReadContracts({
     allowFailure: false,
     chainId: ARBITRUM_SEPOLIA_CHAIN_ID,
     contracts,
-    query: { enabled: Boolean(address) },
+    query: { enabled: Boolean(address && vaultAddress) },
   });
 
   return {
@@ -98,26 +101,28 @@ export function useConnectedUsdGReads(address: Address | undefined) {
   };
 }
 
-export function useCommitmentReads(commitmentCount: bigint | undefined) {
+export function useCommitmentReads(vaultAddress: Address | undefined, commitmentCount: bigint | undefined) {
   const ids = useMemo(() => {
     if (commitmentCount === undefined || commitmentCount > BigInt(1000)) return [];
     return Array.from({ length: Number(commitmentCount) }, (_, index) => BigInt(index + 1));
   }, [commitmentCount]);
   const contracts = useMemo(
     () =>
-      ids.map((id) => ({
-        address: publicWeb3Config.vaultAddress,
+      vaultAddress
+        ? ids.map((id) => ({
+        address: vaultAddress,
         abi: continuityVaultAbi,
         functionName: "getCommitment" as const,
         args: [id] as const,
-      })),
-    [ids],
+      }))
+        : [],
+    [ids, vaultAddress],
   );
   const query = useReadContracts({
     allowFailure: false,
     chainId: ARBITRUM_SEPOLIA_CHAIN_ID,
     contracts,
-    query: { enabled: commitmentCount !== undefined && commitmentCount <= BigInt(1000) },
+    query: { enabled: Boolean(vaultAddress) && commitmentCount !== undefined && commitmentCount <= BigInt(1000) },
   });
 
   const commitments = query.data

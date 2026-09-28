@@ -50,6 +50,13 @@ export const publicWeb3Config = {
       process.env.NEXT_PUBLIC_CONTINUITY_VAULT_ADDRESS,
     ),
   ),
+  factoryAddress: validateAddress(
+    "NEXT_PUBLIC_CONTINUITY_VAULT_FACTORY_ADDRESS",
+    requiredPublicEnv(
+      "NEXT_PUBLIC_CONTINUITY_VAULT_FACTORY_ADDRESS",
+      process.env.NEXT_PUBLIC_CONTINUITY_VAULT_FACTORY_ADDRESS,
+    ),
+  ),
   usdgAddress: validateAddress(
     "NEXT_PUBLIC_USDG_ADDRESS",
     requiredPublicEnv("NEXT_PUBLIC_USDG_ADDRESS", process.env.NEXT_PUBLIC_USDG_ADDRESS),

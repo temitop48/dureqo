@@ -50,3 +50,16 @@ export const usdgAbi = [
   { type: "function", name: "name", inputs: [], outputs: [{ name: "", type: "string" }], stateMutability: "view" },
   { type: "function", name: "symbol", inputs: [], outputs: [{ name: "", type: "string" }], stateMutability: "view" },
 ] as const satisfies Abi;
+
+export const continuityVaultFactoryAbi = [
+  { type: "function", name: "createVault", inputs: [], outputs: [{ name: "vault", type: "address" }], stateMutability: "nonpayable" },
+  { type: "function", name: "vaultCreatedBy", inputs: [{ name: "creator", type: "address" }], outputs: [{ name: "vault", type: "address" }], stateMutability: "view" },
+  { type: "event", name: "VaultCreated", anonymous: false, inputs: [
+    { name: "creator", type: "address", indexed: true },
+    { name: "vault", type: "address", indexed: true },
+    { name: "asset", type: "address", indexed: true },
+    { name: "heartbeatInterval", type: "uint64", indexed: false },
+    { name: "gracePeriod", type: "uint64", indexed: false },
+    { name: "recoveryDelay", type: "uint64", indexed: false },
+  ] },
+] as const satisfies Abi;

@@ -5,6 +5,7 @@ import { Button, StatusBadge, TrackedLabel } from "./foundation";
 import { continuityVaultAbi } from "@/lib/web3/abis";
 import { ARBITRUM_SEPOLIA_CHAIN_ID, publicWeb3Config } from "@/lib/web3/config";
 import { normalizeWeb3Error } from "@/lib/web3/errors";
+import { useVaultDiscovery } from "@/lib/web3/vault-discovery";
 
 function shortenAddress(address: string) {
   return `${address.slice(0, 6)}…${address.slice(-4)}`;
@@ -74,12 +75,13 @@ export function WalletControl() {
 
 export function Web3IntegrationStatus() {
   const { chainId: walletChainId, isConnected } = useAccount();
-  const configuredUsdg = useReadContract({ address: publicWeb3Config.vaultAddress, abi: continuityVaultAbi, chainId: ARBITRUM_SEPOLIA_CHAIN_ID, functionName: "usdg" });
-  const mode = useReadContract({ address: publicWeb3Config.vaultAddress, abi: continuityVaultAbi, chainId: ARBITRUM_SEPOLIA_CHAIN_ID, functionName: "mode" });
-  const failed = configuredUsdg.isError || mode.isError;
-  const loading = configuredUsdg.isLoading || mode.isLoading;
+  const discovery = useVaultDiscovery();
+  const configuredUsdg = useReadContract({ address: discovery.vaultAddress, abi: continuityVaultAbi, chainId: ARBITRUM_SEPOLIA_CHAIN_ID, functionName: "usdg", query: { enabled: Boolean(discovery.vaultAddress) } });
+  const mode = useReadContract({ address: discovery.vaultAddress, abi: continuityVaultAbi, chainId: ARBITRUM_SEPOLIA_CHAIN_ID, functionName: "mode", query: { enabled: Boolean(discovery.vaultAddress) } });
+  const failed = discovery.status === "discovery-error" || configuredUsdg.isError || mode.isError;
+  const loading = discovery.status === "discovering" || configuredUsdg.isLoading || mode.isLoading;
   const walletWrongNetwork = isConnected && walletChainId !== ARBITRUM_SEPOLIA_CHAIN_ID;
-  const walletReadiness = !isConnected ? "Connect wallet to transact" : walletWrongNetwork ? "Switch wallet network" : "Wallet on Arbitrum Sepolia";
+  const walletReadiness = !isConnected ? "Connect wallet to discover vault" : walletWrongNetwork ? "Switch wallet network" : discovery.status === "no-vault" ? "Create a vault to continue" : discovery.status === "ready" ? "Wallet on Arbitrum Sepolia" : "Reading vault context";
 
   return (
     <span className="integration-status" id="activity">
@@ -88,7 +90,7 @@ export function Web3IntegrationStatus() {
       {!loading && !failed && typeof configuredUsdg.data === "string" && configuredUsdg.data.toLowerCase() !== publicWeb3Config.usdgAddress.toLowerCase() ? (
         <small className="web3-inline-error">Configured USDG mismatch</small>
       ) : null}
-      {!loading && !failed && isConnected && typeof mode.data === "number" ? <small>Mode {mode.data.toString()}</small> : null}
+      {!loading && !failed && discovery.status === "ready" && typeof mode.data === "number" ? <small>Mode {mode.data.toString()}</small> : null}
       {failed ? <small>Arbitrum Sepolia RPC or contract read failed.</small> : null}
       {!failed ? <small>{walletReadiness}</small> : null}
     </span>
