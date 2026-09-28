@@ -398,9 +398,9 @@ button:focus-visible, a:focus-visible {
 .continuity-card__timeline-node { color: var(--ink-soft); font-size: 0.7rem; letter-spacing: 0.12em; text-transform: uppercase; white-space: nowrap; }
 .continuity-card__timeline-node--current { color: var(--ink); font-weight: 600; }
 .continuity-card__timeline-rule { background: var(--border-strong); flex: 1; height: 1px; }
-.heartbeat-indicator { align-items: center; border-top: 1px solid var(--border); display: flex; gap: 0.7rem; margin-top: 1rem; padding-top: 0.8rem; }
-.heartbeat-indicator__mark { background: var(--stone); border: 1px solid rgba(29, 34, 37, 0.18); border-radius: 50%; flex: 0 0 auto; height: 0.7rem; width: 0.7rem; }
-.heartbeat-indicator__copy { display: flex; flex-direction: column; gap: 0.2rem; }
+.heartbeat-indicator { align-items: flex-start; border-top: 1px solid var(--border); display: flex; gap: 0.8rem; margin-top: 1rem; padding-top: 0.8rem; }
+.heartbeat-indicator__mark { background: var(--stone); border: 1px solid rgba(29, 34, 37, 0.18); border-radius: 50%; flex: 0 0 auto; height: 0.7rem; margin-top: 0.18rem; width: 0.7rem; }
+.heartbeat-indicator__copy { display: flex; flex-direction: column; gap: 0.3rem; min-width: 0; }
 .heartbeat-indicator__copy strong { color: var(--ink-soft); font-size: 0.72rem; font-weight: 500; }
 .heartbeat-indicator--active .heartbeat-indicator__mark { animation: heartbeat-breathe 4.8s ease-in-out infinite; background: var(--active); border-color: rgba(79, 128, 106, 0.25); }
 .heartbeat-indicator--caution .heartbeat-indicator__mark { animation: heartbeat-caution 2.8s ease-in-out infinite; background: var(--caution); border-color: rgba(144, 121, 92, 0.28); }

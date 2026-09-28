@@ -74,11 +74,10 @@ export function WalletControl() {
 
 export function Web3IntegrationStatus() {
   const { chainId: walletChainId, isConnected } = useAccount();
-  const owner = useReadContract({ address: publicWeb3Config.vaultAddress, abi: continuityVaultAbi, chainId: ARBITRUM_SEPOLIA_CHAIN_ID, functionName: "owner" });
   const configuredUsdg = useReadContract({ address: publicWeb3Config.vaultAddress, abi: continuityVaultAbi, chainId: ARBITRUM_SEPOLIA_CHAIN_ID, functionName: "usdg" });
   const mode = useReadContract({ address: publicWeb3Config.vaultAddress, abi: continuityVaultAbi, chainId: ARBITRUM_SEPOLIA_CHAIN_ID, functionName: "mode" });
-  const failed = owner.isError || configuredUsdg.isError || mode.isError;
-  const loading = owner.isLoading || configuredUsdg.isLoading || mode.isLoading;
+  const failed = configuredUsdg.isError || mode.isError;
+  const loading = configuredUsdg.isLoading || mode.isLoading;
   const walletWrongNetwork = isConnected && walletChainId !== ARBITRUM_SEPOLIA_CHAIN_ID;
   const walletReadiness = !isConnected ? "Connect wallet to transact" : walletWrongNetwork ? "Switch wallet network" : "Wallet on Arbitrum Sepolia";
 
@@ -86,11 +85,10 @@ export function Web3IntegrationStatus() {
     <span className="integration-status" id="activity">
       <span>Vault link</span>
       <strong>{loading ? "Reading…" : failed ? "Read unavailable" : "Vault read OK"}</strong>
-      {!loading && !failed && typeof owner.data === "string" ? <small>Owner {shortenAddress(owner.data)}</small> : null}
       {!loading && !failed && typeof configuredUsdg.data === "string" && configuredUsdg.data.toLowerCase() !== publicWeb3Config.usdgAddress.toLowerCase() ? (
         <small className="web3-inline-error">Configured USDG mismatch</small>
       ) : null}
-      {!loading && !failed && typeof mode.data === "number" ? <small>Mode {mode.data.toString()}</small> : null}
+      {!loading && !failed && isConnected && typeof mode.data === "number" ? <small>Mode {mode.data.toString()}</small> : null}
       {failed ? <small>Arbitrum Sepolia RPC or contract read failed.</small> : null}
       {!failed ? <small>{walletReadiness}</small> : null}
     </span>

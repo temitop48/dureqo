@@ -31,6 +31,10 @@ function displayDate(value: bigint) {
   return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())} UTC`;
 }
 
+function shortenAddress(address: string) {
+  return `${address.slice(0, 6)}…${address.slice(-4)}`;
+}
+
 function modeName(mode: number | undefined) {
   if (mode === MODE_ACTIVE) return "Active";
   if (mode === MODE_CAUTION) return "Caution";
@@ -40,14 +44,14 @@ function modeName(mode: number | undefined) {
 
 type OperationalStatus = "active" | "caution" | "continuity" | "neutral";
 
-function ControllerModeLabel({ status }: { status: OperationalStatus }) {
+function ControllerModeLabel({ status, label, connected }: { status: OperationalStatus; label: string; connected: boolean }) {
   return (
     <div className="operation-card__authority">
       <TrackedLabel>Identity / role</TrackedLabel>
-      <strong>Controller</strong>
+      <strong>{label}</strong>
       <div className="operation-card__mode">
         <span>Operational mode</span>
-        <StatusBadge status={status} />
+        {connected ? <StatusBadge status={status} /> : <strong>Connect wallet to view</strong>}
       </div>
     </div>
   );
@@ -157,7 +161,6 @@ export function Phase12Dashboard() {
   const connected = wallet.isConnected;
   const correctNetwork = connected && wallet.chainId === ARBITRUM_SEPOLIA_CHAIN_ID;
   const operationalMode = typeof vault.mode === "number" ? vault.mode : undefined;
-  const indicatorMode = operationalMode;
   const active = operationalMode === MODE_ACTIVE;
   const caution = operationalMode === MODE_CAUTION;
   const continuity = operationalMode === MODE_CONTINUITY;
@@ -282,13 +285,27 @@ export function Phase12Dashboard() {
   });
 
   const readState = vault.isPending ? "Reading…" : vault.isError ? "Read unavailable" : "Vault read OK";
-  const controllerLabel = !connected ? "Not connected" : !correctNetwork ? "Wrong network" : vault.isPending ? "Reading…" : controller ? "Controller" : "Connected / Not controller";
-  const continuityLabel = indicatorMode === undefined ? "Reading…" : recoveryRequested ? "Recovery pending" : modeName(indicatorMode);
-  const countdownLabel = indicatorMode === MODE_ACTIVE ? "Active window" : indicatorMode === MODE_CAUTION && currentTime === null ? "Timing" : indicatorMode === MODE_CAUTION && eligibilityRemaining !== undefined ? "Time until eligible" : indicatorMode === MODE_CAUTION ? "Activation" : recoveryRequested && currentTime === null ? "Timing" : recoveryRequested && !recoveryReady ? "Recovery delay" : recoveryRequested ? "Recovery" : "Continuity";
-  const countdownValue = indicatorMode === MODE_ACTIVE ? currentTime === null ? "Awaiting local clock" : activeWindowElapsed ? "Elapsed; awaiting refresh" : formatDuration(activeUntilRemaining) : indicatorMode === MODE_CAUTION && currentTime === null ? "Awaiting local clock" : indicatorMode === MODE_CAUTION && eligibilityRemaining !== undefined ? formatDuration(eligibilityRemaining) : indicatorMode === MODE_CAUTION ? "Continuity eligible" : recoveryRequested && currentTime === null ? "Awaiting local clock" : recoveryRequested && !recoveryReady && recoveryReadyAt !== undefined ? formatDuration(recoveryReadyAt - currentTime!) : recoveryRequested ? "Recovery ready" : "Active";
-  const operationalStatus: OperationalStatus = operationalMode === MODE_ACTIVE ? "active" : operationalMode === MODE_CAUTION ? "caution" : operationalMode === MODE_CONTINUITY ? "continuity" : "neutral";
-  const heartbeatState = operationalMode === MODE_ACTIVE ? "active" : recoveryRequested ? "recovery" : operationalMode === MODE_CAUTION ? "caution" : operationalMode === MODE_CONTINUITY ? "continuity" : "neutral";
-  const heartbeatLabel = heartbeatState === "active" ? "Active" : heartbeatState === "caution" ? "Overdue" : heartbeatState === "continuity" ? "Suspended" : heartbeatState === "recovery" ? "Recovery pending" : "Reading contract state";
+  const displayMode = connected ? operationalMode : undefined;
+  const controllerLabel = !connected ? "Connect wallet to view" : !correctNetwork ? "Wrong network" : vault.isPending ? "Reading…" : controller ? "Controller" : "Not controller";
+  const connectedWalletLabel = connected && wallet.address ? shortenAddress(wallet.address) : "Not connected";
+  const ownerLabel = connected && typeof vault.owner === "string" ? shortenAddress(vault.owner) : "Connect wallet to view";
+  const continuityLabel = displayMode === undefined ? "Connect wallet to view" : recoveryRequested ? "Recovery pending" : modeName(displayMode);
+  const countdownLabel = !connected ? "Vault timing" : displayMode === MODE_ACTIVE ? "Active window" : displayMode === MODE_CAUTION && currentTime === null ? "Timing" : displayMode === MODE_CAUTION && eligibilityRemaining !== undefined ? "Time until eligible" : displayMode === MODE_CAUTION ? "Activation" : recoveryRequested && currentTime === null ? "Timing" : recoveryRequested && !recoveryReady ? "Recovery delay" : recoveryRequested ? "Recovery" : "Continuity";
+  const countdownValue = !connected ? "Connect wallet to view" : displayMode === MODE_ACTIVE ? currentTime === null ? "Awaiting local clock" : activeWindowElapsed ? "Elapsed; awaiting refresh" : formatDuration(activeUntilRemaining) : displayMode === MODE_CAUTION && currentTime === null ? "Awaiting local clock" : displayMode === MODE_CAUTION && eligibilityRemaining !== undefined ? formatDuration(eligibilityRemaining) : displayMode === MODE_CAUTION ? "Continuity eligible" : recoveryRequested && currentTime === null ? "Awaiting local clock" : recoveryRequested && !recoveryReady && recoveryReadyAt !== undefined ? formatDuration(recoveryReadyAt - currentTime!) : recoveryRequested ? "Recovery ready" : "Active";
+  const operationalStatus: OperationalStatus = displayMode === MODE_ACTIVE ? "active" : displayMode === MODE_CAUTION ? "caution" : displayMode === MODE_CONTINUITY ? "continuity" : "neutral";
+  const heartbeatState = !connected ? "neutral" : displayMode === MODE_ACTIVE ? "active" : recoveryRequested ? "recovery" : displayMode === MODE_CAUTION ? "caution" : displayMode === MODE_CONTINUITY ? "continuity" : "neutral";
+  const heartbeatLabel = heartbeatState === "active" ? "Active" : heartbeatState === "caution" ? "Overdue" : heartbeatState === "continuity" ? "Suspended" : heartbeatState === "recovery" ? "Recovery pending" : "Connect wallet to view";
+  const stateCopy = !connected
+    ? "Connect wallet to inspect the configured vault and its operational authority."
+    : displayMode === MODE_ACTIVE
+      ? "The controller heartbeat is current and normal authority is available."
+      : displayMode === MODE_CAUTION
+        ? "The heartbeat is overdue. Continuity has not been activated, and Check In can restore Active."
+        : displayMode === MODE_CONTINUITY
+          ? recoveryRequested
+            ? "Recovery is pending. Discretionary authority remains suspended; protected operations remain executable."
+            : "Discretionary authority is suspended. Protected operations remain executable."
+          : "Reading contract state.";
 
   const openModal = (kind: "deposit" | "withdraw", origin: HTMLButtonElement) => {
     modalOriginRef.current = origin;
@@ -351,28 +368,28 @@ export function Phase12Dashboard() {
 
       <PaperCard className="continuity-card paper-card--tactile" id="activity">
         <div className="surface-header"><div><h2>Continuity Operations</h2><span className="surface-count">04</span></div><StatusBadge status={operationalStatus} /></div>
-        <div className="continuity-card__timeline" aria-label="Continuity state progression"><span className={indicatorMode === MODE_ACTIVE ? "continuity-card__timeline-node continuity-card__timeline-node--current" : "continuity-card__timeline-node"}>Active</span><span className="continuity-card__timeline-rule" aria-hidden="true" /><span className={indicatorMode === MODE_CAUTION ? "continuity-card__timeline-node continuity-card__timeline-node--current" : "continuity-card__timeline-node"}>Caution</span><span className="continuity-card__timeline-rule" aria-hidden="true" /><span className={indicatorMode === MODE_CONTINUITY ? "continuity-card__timeline-node continuity-card__timeline-node--current" : "continuity-card__timeline-node"}>Continuity</span></div>
+        <div className="continuity-card__timeline" aria-label="Continuity state progression"><span className={displayMode === MODE_ACTIVE ? "continuity-card__timeline-node continuity-card__timeline-node--current" : "continuity-card__timeline-node"}>Active</span><span className="continuity-card__timeline-rule" aria-hidden="true" /><span className={displayMode === MODE_CAUTION ? "continuity-card__timeline-node continuity-card__timeline-node--current" : "continuity-card__timeline-node"}>Caution</span><span className="continuity-card__timeline-rule" aria-hidden="true" /><span className={displayMode === MODE_CONTINUITY ? "continuity-card__timeline-node continuity-card__timeline-node--current" : "continuity-card__timeline-node"}>Continuity</span></div>
         <div className={`heartbeat-indicator heartbeat-indicator--${heartbeatState}`} role="status" aria-label={`Heartbeat activity: ${heartbeatLabel}`}>
           <span className="heartbeat-indicator__mark" aria-hidden="true" />
           <span className="heartbeat-indicator__copy"><TrackedLabel>Heartbeat activity</TrackedLabel><strong>{heartbeatLabel}</strong></span>
         </div>
-        <div className="continuity-card__state"><strong>{continuityLabel}</strong><p>{indicatorMode === MODE_CONTINUITY ? recoveryRequested ? "Recovery is pending. Discretionary authority remains suspended; protected operations remain executable." : "Discretionary authority is suspended. Protected operations remain executable." : indicatorMode === MODE_CAUTION ? "The heartbeat is overdue. Continuity has not been activated, and Check In can restore Active." : activeWindowElapsed ? "Active window elapsed. Awaiting refreshed onchain state." : "The controller heartbeat keeps the vault operational."}</p></div>
+        <div className="continuity-card__state"><strong>{continuityLabel}</strong><p>{stateCopy}</p></div>
         <div className="continuity-card__countdown"><TrackedLabel>{countdownLabel}</TrackedLabel><strong>{countdownValue}</strong></div>
         <div className="continuity-card__metrics">
-          <div><TrackedLabel>Last heartbeat</TrackedLabel><span>{typeof vault.lastHeartbeat === "bigint" ? displayDate(vault.lastHeartbeat) : "—"}</span></div>
-          <div><TrackedLabel>Active until</TrackedLabel><span>{typeof vault.activeUntil === "bigint" ? displayDate(vault.activeUntil) : "—"}</span></div>
-          <div><TrackedLabel>Continuity eligible</TrackedLabel><span>{typeof vault.continuityEligibleAt === "bigint" ? displayDate(vault.continuityEligibleAt) : "—"}</span></div>
-          <div><TrackedLabel>Recovery ready</TrackedLabel><span>{recoveryReadyAt === undefined ? "—" : displayDate(recoveryReadyAt)}</span></div>
+          <div><TrackedLabel>Last heartbeat</TrackedLabel><span>{!connected ? "Connect wallet to view" : typeof vault.lastHeartbeat === "bigint" ? displayDate(vault.lastHeartbeat) : "—"}</span></div>
+          <div><TrackedLabel>Active until</TrackedLabel><span>{!connected ? "Connect wallet to view" : typeof vault.activeUntil === "bigint" ? displayDate(vault.activeUntil) : "—"}</span></div>
+          <div><TrackedLabel>Continuity eligible</TrackedLabel><span>{!connected ? "Connect wallet to view" : typeof vault.continuityEligibleAt === "bigint" ? displayDate(vault.continuityEligibleAt) : "—"}</span></div>
+          <div><TrackedLabel>Recovery ready</TrackedLabel><span>{!connected ? "Connect wallet to view" : recoveryReadyAt === undefined ? "—" : displayDate(recoveryReadyAt)}</span></div>
         </div>
         <div className="continuity-card__metrics">
           <div><TrackedLabel>Heartbeat interval</TrackedLabel><span>{formatDuration(vault.heartbeatInterval)}</span></div>
           <div><TrackedLabel>Grace period</TrackedLabel><span>{formatDuration(vault.gracePeriod)}</span></div>
           <div><TrackedLabel>Recovery delay</TrackedLabel><span>{formatDuration(vault.recoveryDelay)}</span></div>
-          <div><TrackedLabel>Current time</TrackedLabel><span>{currentTime === null ? "—" : displayDate(currentTime)}</span></div>
+          <div><TrackedLabel>Current time</TrackedLabel><span>{!connected ? "Connect wallet to view" : currentTime === null ? "—" : displayDate(currentTime)}</span></div>
         </div>
         <div className="form-actions">
-          {controller && (active || caution) ? <Button variant="solid" disabled={transactionPending} onClick={checkIn}>{vaultTx.isBusy ? "Pending…" : "Check In"}</Button> : null}
-          {vault.continuityActivated === false ? <Button variant="quiet" disabled={transactionPending || currentTime === null || !connected || !correctNetwork || typeof vault.continuityEligibleAt !== "bigint" || currentTime < vault.continuityEligibleAt} onClick={activate}>{vaultTx.isBusy ? "Pending…" : "Activate Continuity"}</Button> : null}
+          {connected && controller && (active || caution) ? <Button variant="solid" disabled={transactionPending} onClick={checkIn}>{vaultTx.isBusy ? "Pending…" : "Check In"}</Button> : null}
+          {connected && vault.continuityActivated === false ? <Button variant="quiet" disabled={transactionPending || currentTime === null || !correctNetwork || typeof vault.continuityEligibleAt !== "bigint" || currentTime < vault.continuityEligibleAt} onClick={activate}>{vaultTx.isBusy ? "Pending…" : "Activate Continuity"}</Button> : null}
           {controllerContinuity && !recoveryRequested ? <Button variant="quiet" disabled={transactionPending} onClick={requestRecovery}>{vaultTx.isBusy ? "Pending…" : "Request recovery"}</Button> : null}
           {controllerContinuity && recoveryRequested ? <Button variant="quiet" disabled={transactionPending} onClick={cancelRecovery}>{vaultTx.isBusy ? "Pending…" : "Cancel recovery"}</Button> : null}
           {controllerContinuity && recoveryRequested && recoveryReady ? <Button variant="solid" disabled={transactionPending} onClick={completeRecovery}>{vaultTx.isBusy ? "Pending…" : "Complete recovery"}</Button> : null}
@@ -385,14 +402,14 @@ export function Phase12Dashboard() {
       <section className="operational-grid" aria-label="Treasury overview">
         <BalanceCard title="Treasury Balance" value={vault.vaultBalance} decimals={decimals} detail={readState} className="operational-card--balance paper-card--tactile paper-card--tactile-quiet" />
         <PaperCard className="operational-card paper-card--tactile paper-card--tactile-quiet"><div className="operational-card__header"><h2>Protection Coverage</h2><span className="card-menu">USDG</span></div><div className="live-value"><p>{displayUsd(vault.protectedBalance, decimals)}</p><small>Protected balance</small></div><Divider /><div className="card-footnote"><span>Available</span><strong>{displayUsd(vault.availableBalance, decimals)}</strong></div><div className="card-footnote"><span>Funded</span><strong>{typeof vault.isFunded === "boolean" ? vault.isFunded ? "Yes" : "No" : "—"}</strong></div></PaperCard>
-        <PaperCard className="operational-card operational-card--controller paper-card--tactile paper-card--tactile-quiet"><div className="operational-card__header"><h2>Controller Status</h2><TrackedLabel>Identity / authority</TrackedLabel></div><div className="controller-state"><strong>{controllerLabel}</strong></div><Divider /><div className="controller-meta"><span>Operational mode</span><StatusBadge status={operationalStatus} /></div><div className="controller-meta"><span>Owner</span><strong className="mono-value">{typeof vault.owner === "string" ? vault.owner : "—"}</strong></div></PaperCard>
+        <PaperCard className="operational-card operational-card--controller paper-card--tactile paper-card--tactile-quiet"><div className="operational-card__header"><h2>Controller Status</h2><TrackedLabel>Identity / authority</TrackedLabel></div><div className="controller-state"><strong>{controllerLabel}</strong></div><Divider /><div className="controller-meta"><span>Connected wallet</span><strong className="mono-value">{connectedWalletLabel}</strong></div><div className="controller-meta"><span>Vault controller</span><strong className="mono-value">{ownerLabel}</strong></div><div className="controller-meta"><span>Operational mode</span>{connected ? <StatusBadge status={operationalStatus} /> : <strong>Connect wallet to view</strong>}</div></PaperCard>
       </section>
       {vault.isError ? <p className="read-error" role="alert">Vault reads unavailable: {errorText(vault.error)}</p> : null}
 
       <section className="phase12-operations" aria-label="Treasury operations">
-        <PaperCard id="deposit" className="operation-card paper-card--tactile"><div className="surface-header"><div><h2>Deposit USDG</h2><span className="surface-count">01</span></div><TrackedLabel>Exact approval</TrackedLabel></div><div className="paper-card__summary"><div><TrackedLabel>Connected wallet USDG</TrackedLabel><strong>{displayUsd(token.balance, decimals)}</strong></div><div><TrackedLabel>Current allowance</TrackedLabel><strong>{displayUsd(token.allowance, decimals)}</strong></div></div><p className="operation-copy">Approve only the requested amount, then explicitly submit the deposit. Approval never submits a deposit automatically.</p><div className="form-actions"><Button variant="solid" onClick={(event) => openModal("deposit", event.currentTarget)}>Deposit USDG</Button></div></PaperCard>
-        <PaperCard id="withdraw" className="operation-card paper-card--tactile"><div className="surface-header"><div><h2>Withdraw Available</h2><span className="surface-count">02</span></div><ControllerModeLabel status={operationalStatus} /></div><div className="paper-card__summary"><div><TrackedLabel>Available capital</TrackedLabel><strong>{displayUsd(vault.availableBalance, decimals)}</strong></div><div><TrackedLabel>Identity / role</TrackedLabel><strong>{controllerLabel}</strong></div><div><TrackedLabel>Operational mode</TrackedLabel><StatusBadge status={operationalStatus} /></div></div><p className="operation-copy">Only unprotected available capital can be withdrawn. Protected balance cannot be withdrawn.</p><div className="form-actions"><Button variant="solid" onClick={(event) => openModal("withdraw", event.currentTarget)}>Withdraw Available</Button></div></PaperCard>
-        <PaperCard id="create" className="operation-card operation-card--wide paper-card--tactile"><div className="surface-header"><div><h2>Create Commitment</h2><span className="surface-count">03</span></div><ControllerModeLabel status={operationalStatus} /></div><p className="operation-copy">Commit a stored recipient and amount against currently available treasury capital. The vault remains authoritative.</p><div className="form-row form-row--four"><label>Recipient<input value={createRecipient} onChange={(event) => setCreateRecipient(event.target.value)} placeholder="0x…" /></label><label>Amount<input inputMode="decimal" value={createAmount} onChange={(event) => setCreateAmount(event.target.value)} placeholder="0.00" /></label><label>Type<select value={commitmentType} onChange={(event) => setCommitmentType(event.target.value as "one-time" | "recurring")}><option value="one-time">One-time</option><option value="recurring">Recurring</option></select></label><label>{commitmentType === "recurring" ? "Interval (seconds)" : "Interval"}<input disabled={commitmentType === "one-time"} inputMode="numeric" value={commitmentType === "one-time" ? "0" : interval} onChange={(event) => setInterval(event.target.value)} placeholder="0" /></label></div><div className="form-row"><label>First due<input type="datetime-local" value={firstDue} onChange={(event) => setFirstDue(event.target.value)} /></label></div><div className="form-actions"><Button variant="solid" disabled={!controllerActive || transactionPending} onClick={submitCreate}>{vaultTx.isBusy ? vaultTx.isConfirming ? "Confirming…" : "Creating…" : "Create commitment"}</Button></div></PaperCard>
+        <PaperCard id="deposit" className="operation-card paper-card--tactile"><div className="surface-header"><div><h2>Deposit USDG</h2><span className="surface-count">01</span></div><TrackedLabel>Exact approval</TrackedLabel></div><div className="paper-card__summary"><div><TrackedLabel>Connected wallet USDG</TrackedLabel><strong>{displayUsd(token.balance, decimals)}</strong></div><div><TrackedLabel>Current allowance</TrackedLabel><strong>{displayUsd(token.allowance, decimals)}</strong></div></div><p className="operation-copy">Approve only the requested amount, then explicitly submit the deposit. Approval never submits a deposit automatically.</p><div className="form-actions"><Button variant="solid" disabled={!connected} onClick={(event) => openModal("deposit", event.currentTarget)}>Deposit USDG</Button></div></PaperCard>
+        <PaperCard id="withdraw" className="operation-card paper-card--tactile"><div className="surface-header"><div><h2>Withdraw Available</h2><span className="surface-count">02</span></div><ControllerModeLabel status={operationalStatus} label={controllerLabel} connected={connected} /></div><div className="paper-card__summary"><div><TrackedLabel>Available capital</TrackedLabel><strong>{displayUsd(vault.availableBalance, decimals)}</strong></div><div><TrackedLabel>Identity / role</TrackedLabel><strong>{controllerLabel}</strong></div><div><TrackedLabel>Operational mode</TrackedLabel>{connected ? <StatusBadge status={operationalStatus} /> : <strong>Connect wallet to view</strong>}</div></div><p className="operation-copy">Only unprotected available capital can be withdrawn. Protected balance cannot be withdrawn.</p><div className="form-actions"><Button variant="solid" disabled={!connected} onClick={(event) => openModal("withdraw", event.currentTarget)}>Withdraw Available</Button></div></PaperCard>
+        <PaperCard id="create" className="operation-card operation-card--wide paper-card--tactile"><div className="surface-header"><div><h2>Create Commitment</h2><span className="surface-count">03</span></div><ControllerModeLabel status={operationalStatus} label={controllerLabel} connected={connected} /></div><p className="operation-copy">Commit a stored recipient and amount against currently available treasury capital. The vault remains authoritative.</p><div className="form-row form-row--four"><label>Recipient<input value={createRecipient} onChange={(event) => setCreateRecipient(event.target.value)} placeholder="0x…" /></label><label>Amount<input inputMode="decimal" value={createAmount} onChange={(event) => setCreateAmount(event.target.value)} placeholder="0.00" /></label><label>Type<select value={commitmentType} onChange={(event) => setCommitmentType(event.target.value as "one-time" | "recurring")}><option value="one-time">One-time</option><option value="recurring">Recurring</option></select></label><label>{commitmentType === "recurring" ? "Interval (seconds)" : "Interval"}<input disabled={commitmentType === "one-time"} inputMode="numeric" value={commitmentType === "one-time" ? "0" : interval} onChange={(event) => setInterval(event.target.value)} placeholder="0" /></label></div><div className="form-row"><label>First due<input type="datetime-local" value={firstDue} onChange={(event) => setFirstDue(event.target.value)} /></label></div><div className="form-actions"><Button variant="solid" disabled={!controllerActive || transactionPending} onClick={submitCreate}>{vaultTx.isBusy ? vaultTx.isConfirming ? "Confirming…" : "Creating…" : "Create commitment"}</Button></div></PaperCard>
       </section>
 
       {formError && !activeModal ? <p className="read-error" role="alert">{formError}</p> : null}
