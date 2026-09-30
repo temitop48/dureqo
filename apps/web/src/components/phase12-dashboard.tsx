@@ -44,6 +44,7 @@ function modeName(mode: number | undefined) {
 }
 
 type OperationalStatus = "active" | "caution" | "continuity" | "neutral";
+type ModalTransactionSource = "approval" | "vault";
 
 function formatDuration(seconds: bigint | undefined) {
   if (seconds === undefined) return "—";
@@ -106,7 +107,7 @@ function BalanceCard({ title, value, decimals, detail, className = "" }: { title
   );
 }
 
-function CommitmentRow({ commitment, decimals, currentTime, canCancel, canExecute, pending, onCancel, onExecute }: { commitment: { id: bigint } & Commitment; decimals: number | undefined; currentTime: bigint | null; canCancel: boolean; canExecute: boolean; pending: boolean; onCancel: (id: bigint) => void; onExecute: (id: bigint) => void }) {
+function CommitmentRow({ commitment, decimals, currentTime, operationalStatus, canCancel, canExecute, pending, onCancel, onExecute }: { commitment: { id: bigint } & Commitment; decimals: number | undefined; currentTime: bigint | null; operationalStatus: OperationalStatus; canCancel: boolean; canExecute: boolean; pending: boolean; onCancel: (id: bigint) => void; onExecute: (id: bigint) => void }) {
   const due = currentTime !== null && commitment.active && currentTime >= commitment.nextDue;
   return (
     <div className="commitment-row">
@@ -115,7 +116,7 @@ function CommitmentRow({ commitment, decimals, currentTime, canCancel, canExecut
       <div><TrackedLabel>Amount</TrackedLabel><strong>{displayUsd(commitment.amount, decimals)}</strong></div>
       <div><TrackedLabel>Schedule</TrackedLabel><span>{commitment.interval === BigInt(0) ? "One-time" : `Recurring · ${commitment.interval.toString()}s`}</span></div>
       <div><TrackedLabel>Next due</TrackedLabel><span>{displayDate(commitment.nextDue)}</span></div>
-      <div className="commitment-row__status"><StatusBadge status={commitment.active ? due ? "caution" : "active" : "neutral"} /><span>{commitment.active ? due ? "Due" : "Active" : "Completed / cancelled"}</span></div>
+      <div className="commitment-row__status"><StatusBadge status={commitment.active ? operationalStatus : "neutral"} /><span>{commitment.active ? due ? "Due" : "Active" : "Completed / cancelled"}</span></div>
       <div className="commitment-row__actions">
         {commitment.active && due ? <Button variant="solid" disabled={!canExecute || pending} onClick={() => onExecute(commitment.id)}>{pending ? "Pending…" : "Execute"}</Button> : <span className="action-hint">{commitment.active ? "Not due" : "No action"}</span>}
         {commitment.active ? <Button variant="quiet" disabled={!canCancel || pending} onClick={() => onCancel(commitment.id)}>Cancel</Button> : null}
@@ -139,6 +140,8 @@ export function Phase12Dashboard() {
   const [withdrawAmount, setWithdrawAmount] = useState("");
   const [formError, setFormError] = useState<string | null>(null);
   const [activeModal, setActiveModal] = useState<"deposit" | "withdraw" | null>(null);
+  const [modalTransactionId, setModalTransactionId] = useState<number | undefined>(undefined);
+  const [modalTransactionSource, setModalTransactionSource] = useState<ModalTransactionSource | undefined>(undefined);
   const modalRef = useRef<HTMLElement | null>(null);
   const modalOriginRef = useRef<HTMLButtonElement | null>(null);
   const lastConfirmedHash = useRef<string | undefined>(undefined);
@@ -200,18 +203,34 @@ export function Phase12Dashboard() {
   }, [decimals, depositAmount]);
   const depositNeedsApproval = parsedDeposit !== undefined && (typeof token.allowance !== "bigint" || token.allowance < parsedDeposit);
   const depositReady = Boolean(parsedDeposit !== undefined && connected && correctNetwork && typeof token.balance === "bigint" && token.balance >= parsedDeposit && !depositNeedsApproval && !transactionPending);
+  const depositTransactionVisible = modalTransactionSource === "vault"
+    && modalTransactionId === vaultTx.transactionId
+    && vaultTx.transactionOperation === "deposit"
+    && (vaultTx.isBusy || !depositNeedsApproval);
+
+  const updateDepositAmount = (value: string) => {
+    setDepositAmount(value);
+    if (!transactionPending && modalTransactionId !== undefined) {
+      setModalTransactionId(undefined);
+      setModalTransactionSource(undefined);
+    }
+  };
 
   const submitDepositApproval = () => runFormAction(() => {
     if (parsedDeposit === undefined) throw new Error("Enter a valid USDG amount.");
     if (!connected || !correctNetwork || !vaultReady) throw new Error("Discover a vault on Arbitrum Sepolia first.");
     if (typeof token.balance !== "bigint" || token.balance < parsedDeposit) throw new Error("Wallet USDG balance is insufficient.");
     approvalTx.approve(parsedDeposit);
+    setModalTransactionId(approvalTx.transactionId + 1);
+    setModalTransactionSource("approval");
   });
 
   const submitDeposit = () => runFormAction(() => {
     if (parsedDeposit === undefined) throw new Error("Enter a valid USDG amount.");
     if (!vaultReady || !depositReady) throw new Error("Approve the exact deposit amount before depositing.");
     vaultTx.writeVault({ functionName: "deposit", args: [parsedDeposit] });
+    setModalTransactionId((vaultTx.transactionId ?? 0) + 1);
+    setModalTransactionSource("vault");
   });
 
   const submitCreate = () => runFormAction(() => {
@@ -246,6 +265,8 @@ export function Phase12Dashboard() {
     const amount = parsePositiveTokenAmount(withdrawAmount, decimals);
     if (typeof vault.availableBalance !== "bigint" || amount > vault.availableBalance) throw new Error("Amount exceeds available USDG capital.");
     vaultTx.writeVault({ functionName: "withdrawAvailable", args: [recipient, amount] });
+    setModalTransactionId((vaultTx.transactionId ?? 0) + 1);
+    setModalTransactionSource("vault");
   });
 
   const checkIn = () => runFormAction(() => {
@@ -307,6 +328,14 @@ export function Phase12Dashboard() {
   const openModal = (kind: "deposit" | "withdraw", origin: HTMLButtonElement) => {
     modalOriginRef.current = origin;
     setFormError(null);
+    const activeTransactionId = kind === "withdraw"
+      ? vaultTx.isBusy && vaultTx.transactionOperation === "withdrawAvailable" ? vaultTx.transactionId : undefined
+      : approvalTx.isBusy ? approvalTx.transactionId : vaultTx.isBusy && vaultTx.transactionOperation === "deposit" ? vaultTx.transactionId : undefined;
+    const activeTransactionSource: ModalTransactionSource | undefined = kind === "withdraw"
+      ? activeTransactionId === undefined ? undefined : "vault"
+      : approvalTx.isBusy ? "approval" : vaultTx.isBusy && vaultTx.transactionOperation === "deposit" ? "vault" : undefined;
+    setModalTransactionId(activeTransactionId);
+    setModalTransactionSource(activeTransactionSource);
     setActiveModal(kind);
   };
 
@@ -434,7 +463,7 @@ export function Phase12Dashboard() {
       </section>
 
       {formError && !activeModal ? <p className="read-error" role="alert">{formError}</p> : null}
-      <section className="commitments-surface paper-card" id="commitments" aria-label="Protected commitments"><div className="surface-header"><div><h2>Protected Commitments</h2><span className="surface-count">{displayInteger(vault.commitmentCount)}</span></div><TrackedLabel>Onchain state</TrackedLabel></div>{!vaultReady ? <div className="empty-surface"><TrackedLabel>Vault context required</TrackedLabel><p>Discover or create a vault before reading commitments.</p></div> : commitments.isPending ? <div className="empty-surface"><TrackedLabel>Reading commitments…</TrackedLabel></div> : commitments.isError ? <div className="empty-surface"><TrackedLabel>Commitments unavailable</TrackedLabel><p>{errorText(commitments.error)}</p></div> : commitments.tooMany ? <div className="empty-surface"><TrackedLabel>Commitment list exceeds display limit</TrackedLabel><p>The onchain count is {displayInteger(vault.commitmentCount)}. No partial list is shown.</p></div> : commitments.commitments.length === 0 ? <div className="empty-surface"><TrackedLabel>No commitments available</TrackedLabel><p>Zero commitments is a valid vault state.</p></div> : <div className="commitment-list">{commitments.commitments.map((commitment) => <CommitmentRow key={commitment.id.toString()} commitment={commitment} decimals={decimals} currentTime={currentTime} canCancel={Boolean(controllerActive)} canExecute={Boolean(connected && correctNetwork && vaultReady)} pending={vaultTx.isBusy} onCancel={cancel} onExecute={execute} />)}</div>}</section>
+      <section className="commitments-surface paper-card" id="commitments" aria-label="Protected commitments"><div className="surface-header"><div><h2>Protected Commitments</h2><span className="surface-count">{displayInteger(vault.commitmentCount)}</span></div><TrackedLabel>Onchain state</TrackedLabel></div>{!vaultReady ? <div className="empty-surface"><TrackedLabel>Vault context required</TrackedLabel><p>Discover or create a vault before reading commitments.</p></div> : commitments.isPending ? <div className="empty-surface"><TrackedLabel>Reading commitments…</TrackedLabel></div> : commitments.isError ? <div className="empty-surface"><TrackedLabel>Commitments unavailable</TrackedLabel><p>{errorText(commitments.error)}</p></div> : commitments.tooMany ? <div className="empty-surface"><TrackedLabel>Commitment list exceeds display limit</TrackedLabel><p>The onchain count is {displayInteger(vault.commitmentCount)}. No partial list is shown.</p></div> : commitments.commitments.length === 0 ? <div className="empty-surface"><TrackedLabel>No commitments available</TrackedLabel><p>Zero commitments is a valid vault state.</p></div> : <div className="commitment-list">{commitments.commitments.map((commitment) => <CommitmentRow key={commitment.id.toString()} commitment={commitment} decimals={decimals} currentTime={currentTime} operationalStatus={operationalStatus} canCancel={Boolean(controllerActive)} canExecute={Boolean(connected && correctNetwork && vaultReady)} pending={vaultTx.isBusy} onCancel={cancel} onExecute={execute} />)}</div>}</section>
       <section className="application-state-strip" aria-label="Connected wallet balance"><div><TrackedLabel>Connected wallet USDG</TrackedLabel><strong>{displayUsd(token.balance, decimals)}</strong></div><div><TrackedLabel>Vault funding</TrackedLabel><strong>{typeof vault.isFunded === "boolean" ? vault.isFunded ? "Funded" : "Not funded" : "Reading…"}</strong></div><div><TrackedLabel>Execution</TrackedLabel><strong>{connected && correctNetwork ? "Wallet ready" : "Connect on Arbitrum Sepolia"}</strong></div></section>
 
       {activeModal ? (
@@ -445,10 +474,10 @@ export function Phase12Dashboard() {
                 <div className="paper-modal__header"><div><TrackedLabel>Operation 01</TrackedLabel><h2 id="deposit-modal-title">Deposit USDG</h2></div><button className="paper-modal__close" type="button" data-modal-focusable aria-label="Close Deposit USDG" disabled={transactionPending} onClick={closeModal}>×</button></div>
                 <div className="paper-card__summary"><div><TrackedLabel>Connected wallet USDG</TrackedLabel><strong>{displayUsd(token.balance, decimals)}</strong></div><div><TrackedLabel>Current allowance</TrackedLabel><strong>{displayUsd(token.allowance, decimals)}</strong></div></div>
                 <p className="operation-copy">Approve only the exact requested amount. Approval never submits a deposit automatically; the final deposit remains an explicit separate action.</p>
-                <div className="form-row"><label>Amount<input data-modal-focusable inputMode="decimal" value={depositAmount} onChange={(event) => setDepositAmount(event.target.value)} placeholder={decimals === undefined ? "Reading decimals…" : "0.00"} /></label></div>
+                <div className="form-row"><label>Amount<input data-modal-focusable inputMode="decimal" value={depositAmount} onChange={(event) => updateDepositAmount(event.target.value)} placeholder={decimals === undefined ? "Reading decimals…" : "0.00"} /></label></div>
                 <div className="form-actions">{depositNeedsApproval ? <Button variant="solid" data-modal-focusable disabled={transactionPending || !connected || !correctNetwork} onClick={submitDepositApproval}>{approvalTx.isBusy ? approvalTx.isConfirming ? "Confirming…" : "Approving…" : "Approve USDG"}</Button> : <Button variant="solid" data-modal-focusable disabled={!depositReady} onClick={submitDeposit}>{vaultTx.isBusy ? vaultTx.isConfirming ? "Confirming…" : "Depositing…" : "Deposit USDG"}</Button>}</div>
                 {formError ? <p className="read-error" role="alert">{formError}</p> : null}
-                {approvalTx.isConfirmed ? <p className="transaction-note">Approval confirmed. Deposit remains a separate action.</p> : null}<TransactionNote label="Approval" phase={approvalTx.phase} error={approvalTx.errorMessage} /><TransactionNote label="Deposit" phase={vaultTx.phase} error={vaultTx.errorMessage} />
+                {approvalTx.isConfirmed && modalTransactionSource === "approval" && modalTransactionId === approvalTx.transactionId ? <p className="transaction-note">Approval confirmed. Deposit remains a separate action.</p> : null}{modalTransactionSource === "approval" && modalTransactionId === approvalTx.transactionId ? <TransactionNote label="Approval" phase={approvalTx.phase} error={approvalTx.errorMessage} /> : null}{depositTransactionVisible ? <TransactionNote label="Deposit" phase={vaultTx.phase} error={vaultTx.errorMessage} /> : null}
               </>
             ) : (
               <>
@@ -457,7 +486,7 @@ export function Phase12Dashboard() {
                 <p className="operation-copy">Only unprotected available capital can be withdrawn. Protected balance cannot be withdrawn.</p>
                 <div className="form-row"><label>Recipient<input data-modal-focusable value={withdrawRecipient} onChange={(event) => setWithdrawRecipient(event.target.value)} placeholder="0x…" /></label><label>Amount<input data-modal-focusable inputMode="decimal" value={withdrawAmount} onChange={(event) => setWithdrawAmount(event.target.value)} placeholder="0.00" /></label></div>
                 <div className="form-actions"><Button variant="solid" data-modal-focusable disabled={!controllerActive || transactionPending} onClick={submitWithdraw}>{vaultTx.isBusy ? vaultTx.isConfirming ? "Confirming…" : "Withdrawing…" : "Withdraw Available"}</Button></div>
-                {formError ? <p className="read-error" role="alert">{formError}</p> : null}<TransactionNote label="Withdrawal" phase={vaultTx.phase} error={vaultTx.errorMessage} />
+                {formError ? <p className="read-error" role="alert">{formError}</p> : null}{modalTransactionSource === "vault" && modalTransactionId === vaultTx.transactionId && vaultTx.transactionOperation === "withdrawAvailable" ? <TransactionNote label="Withdrawal" phase={vaultTx.phase} error={vaultTx.errorMessage} /> : null}
               </>
             )}
           </section>

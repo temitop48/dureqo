@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import type { ContractFunctionArgs } from "viem";
 import { useAccount, useWaitForTransactionReceipt, useWriteContract } from "wagmi";
 import { continuityVaultAbi, usdgAbi } from "@/lib/web3/abis";
@@ -28,6 +28,8 @@ type SupportedVaultWriteName =
   | "requestRecovery"
   | "withdrawAvailable";
 
+type VaultTransactionOperation = SupportedVaultWriteName;
+
 export type VaultWriteRequest = {
   [Name in SupportedVaultWriteName]: {
     functionName: Name;
@@ -43,6 +45,7 @@ export function useVaultTransaction(vaultAddress: `0x${string}` | undefined) {
     hash: write.data,
     query: { enabled: Boolean(write.data) },
   });
+  const [transaction, setTransaction] = useState<{ id: number; operation: VaultTransactionOperation } | null>(null);
   const isBusy = write.isPending || receipt.isLoading;
 
   const writeVault = useCallback(
@@ -53,6 +56,7 @@ export function useVaultTransaction(vaultAddress: `0x${string}` | undefined) {
       }
       if (!vaultAddress) throw new Error("No runtime vault has been discovered.");
 
+      setTransaction((previous) => ({ id: (previous?.id ?? 0) + 1, operation: request.functionName }));
       write.writeContract({
         abi: continuityVaultAbi,
         address: vaultAddress,
@@ -75,6 +79,8 @@ export function useVaultTransaction(vaultAddress: `0x${string}` | undefined) {
   return {
     ...write,
     hash: write.data,
+    transactionId: transaction?.id,
+    transactionOperation: transaction?.operation,
     phase,
     errorMessage: write.error || receipt.error ? normalizeWeb3Error(write.error ?? receipt.error) : undefined,
     writeVault,
@@ -92,6 +98,7 @@ export function useUsdGApproval(vaultAddress: `0x${string}` | undefined) {
     hash: write.data,
     query: { enabled: Boolean(write.data) },
   });
+  const [transactionId, setTransactionId] = useState(0);
   const isBusy = write.isPending || receipt.isLoading;
 
   const approve = useCallback(
@@ -102,6 +109,7 @@ export function useUsdGApproval(vaultAddress: `0x${string}` | undefined) {
       }
       if (!vaultAddress) throw new Error("No runtime vault has been discovered.");
 
+      setTransactionId((previous) => previous + 1);
       write.writeContract({
         abi: usdgAbi,
         address: publicWeb3Config.usdgAddress,
@@ -128,6 +136,7 @@ export function useUsdGApproval(vaultAddress: `0x${string}` | undefined) {
   return {
     ...write,
     hash: write.data,
+    transactionId,
     phase,
     errorMessage: write.error || receipt.error ? normalizeWeb3Error(write.error ?? receipt.error) : undefined,
     isConfirming: receipt.isLoading,

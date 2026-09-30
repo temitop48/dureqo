@@ -197,7 +197,7 @@ contract ContinuityVaultFactoryTest is Test {
     }
 
     function testFuzzArbitraryCreatorBecomesOwner(address creator) public {
-        if (creator == address(0)) creator = CREATOR;
+        _assumeFreshCreator(creator);
 
         factoryVm.prank(creator);
         address vaultAddress = factory.createVault();
@@ -208,7 +208,7 @@ contract ContinuityVaultFactoryTest is Test {
     }
 
     function testFuzzDuplicateCreationAlwaysReverts(address creator) public {
-        if (creator == address(0)) creator = CREATOR;
+        _assumeFreshCreator(creator);
 
         factoryVm.prank(creator);
         address vaultAddress = factory.createVault();
@@ -223,12 +223,18 @@ contract ContinuityVaultFactoryTest is Test {
     }
 
     function testFuzzFactoryNeverBecomesOwner(address creator) public {
-        if (creator == address(0) || creator == address(factory)) creator = CREATOR;
+        _assumeFreshCreator(creator);
 
         factoryVm.prank(creator);
         address vaultAddress = factory.createVault();
 
         _true(ContinuityVault(vaultAddress).owner() != address(factory));
+    }
+
+    function _assumeFreshCreator(address creator) private view {
+        vm.assume(creator != address(0));
+        vm.assume(creator != address(factory));
+        vm.assume(factory.vaultCreatedBy(creator) == address(0));
     }
 
     function invariant_mappedVaultsAreDeployedAndFactoryIsNotOwner() public view {
